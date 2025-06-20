@@ -1,88 +1,89 @@
 require('dotenv').config();
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
+const { createCanvas, loadImage } = require('canvas');
+const axios = require('axios');
 
 const app = express();
 
-// ======================
-// SECURE PRODUCTION SETUP
-// ======================
+// Middleware
 app.use(cors({
-  origin: 'https://metrotexonline.vercel.app', // ONLY your frontend URL
+  origin: ['https://metrotexonline.vercel.app', 'http://localhost:3000'],
   methods: ['POST'],
   allowedHeaders: ['Content-Type']
 }));
+app.use(express.json({ limit: '25mb' }));
 
-app.use(express.json());
-
-// ======================
-// STRICT API ROUTES
-// ======================
+// Chat Endpoint
 app.post('/chat', async (req, res) => {
   try {
-    // Validate request format
-    if (!req.body?.message) {
-      return res.status(400).json({ 
-        error: "Invalid request format",
-        details: "Missing 'message' field"
-      });
-    }
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message is required" });
 
-    // Process with OpenRouter
     const response = await axios.post(
-      'https://openrouter.ai/api/v1/chat/completions',
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages: [{ role: "user", content: req.body.message }],
-        temperature: 0.7
-      },
+      'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2',
+      { inputs: message },
       {
         headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "HTTP-Referer": "https://metrotexonline.vercel.app",
-          "X-Title": "MetroTex AI",
-          "Content-Type": "application/json"
-        },
-        timeout: 25000
+          'Authorization': `Bearer ${process.env.HF_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
       }
     );
 
-    // Validate response
-    const aiResponse = response.data.choices[0]?.message?.content;
-    if (!aiResponse) throw new Error("Empty AI response");
-
-    // Send success
-    res.setHeader('Content-Type', 'application/json');
-    res.json({ reply: aiResponse });
-
+    res.json({ reply: response.data.generated_text });
   } catch (error) {
-    console.error('API Error:', error.message);
-    
-    // Error response
-    res.status(500).json({
+    console.error('Chat error:', error);
+    res.status(500).json({ 
       error: "AI service unavailable",
-      details: error.response?.data?.error?.message || "Internal error"
+      details: error.response?.data?.error || error.message
     });
   }
 });
 
-// ======================
-// PRODUCTION SECURITY
-// ======================
-// Block all non-API routes
-app.use((req, res) => {
-  res.status(403).json({ 
-    error: "Access forbidden",
-    details: "Only /chat endpoint is available"
-  });
+// Image Generation Endpoint
+app.post('/generate-image', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+
+    // Generate image
+    const hfResponse = await axios.post(
+      'https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0',
+      { inputs: prompt },
+      {
+        headers: { 
+          'Authorization': `Bearer ${process.env.HF_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+
+    // Add watermark
+    const image = await loadImage(hfResponse.data);
+    const canvas = createCanvas(image.width, image.height);
+    const ctx = canvas.getContext('2d');
+    
+    ctx.drawImage(image, 0, 0);
+    ctx.font = 'bold 28px Arial';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.textAlign = 'right';
+    ctx.fillText('MetroTex', canvas.width - 25, canvas.height - 25);
+
+    // Send as PNG
+    res.set('Content-Type', 'image/png');
+    canvas.createPNGStream().pipe(res);
+
+  } catch (error) {
+    console.error('Image error:', error);
+    res.status(500).json({
+      error: "Image generation failed",
+      details: error.message,
+      fallback: "data:image/svg+xml;base64,..." // Base64 placeholder
+    });
+  }
 });
 
-// ======================
-// SERVER START
-// ======================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Production server running on port ${PORT}`);
-  console.log(`CORS restricted to: https://metrotexonline.vercel.app`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
