@@ -1,67 +1,88 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
 
-// Enhanced CORS for your production frontend
+// ======================
+// SECURE PRODUCTION SETUP
+// ======================
 app.use(cors({
-  origin: 'https://metrotexonline.vercel.app',
-  methods: ['POST']
+  origin: 'https://metrotexonline.vercel.app', // ONLY your frontend URL
+  methods: ['POST'],
+  allowedHeaders: ['Content-Type']
 }));
 
-app.use(express.json({ limit: '50mb' })); // Increased for image support
+app.use(express.json());
 
-// Text Endpoint
+// ======================
+// STRICT API ROUTES
+// ======================
 app.post('/chat', async (req, res) => {
   try {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message required" });
+    // Validate request format
+    if (!req.body?.message) {
+      return res.status(400).json({ 
+        error: "Invalid request format",
+        details: "Missing 'message' field"
+      });
+    }
 
+    // Process with OpenRouter
     const response = await axios.post(
-      'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2',
-      { inputs: message },
+      'https://openrouter.ai/api/v1/chat/completions',
       {
-        headers: { 'Authorization': `Bearer ${process.env.HF_TOKEN}` },
-        timeout: 30000
+        model: "mistralai/mistral-7b-instruct",
+        messages: [{ role: "user", content: req.body.message }],
+        temperature: 0.7
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": "https://metrotexonline.vercel.app",
+          "X-Title": "MetroTex AI",
+          "Content-Type": "application/json"
+        },
+        timeout: 25000
       }
     );
+
+    // Validate response
+    const aiResponse = response.data.choices[0]?.message?.content;
+    if (!aiResponse) throw new Error("Empty AI response");
+
+    // Send success
+    res.setHeader('Content-Type', 'application/json');
+    res.json({ reply: aiResponse });
+
+  } catch (error) {
+    console.error('API Error:', error.message);
     
-    res.json({ reply: response.data[0]?.generated_text || "No response" });
-  } catch (error) {
-    res.status(500).json({ 
-      error: "AI service unavailable",
-      details: error.response?.data?.error || error.message
-    });
-  }
-});
-
-// Image Endpoint
-app.post('/generate-image', async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Prompt required" });
-
-    const response = await axios.post(
-      'https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0',
-      { inputs: prompt },
-      {
-        headers: { 'Authorization': `Bearer ${process.env.HF_TOKEN}` },
-        responseType: 'arraybuffer',
-        timeout: 60000
-      }
-    );
-
-    res.set('Content-Type', 'image/png');
-    res.send(response.data);
-  } catch (error) {
+    // Error response
     res.status(500).json({
-      error: "Image generation failed",
-      details: error.message
+      error: "AI service unavailable",
+      details: error.response?.data?.error?.message || "Internal error"
     });
   }
 });
 
+// ======================
+// PRODUCTION SECURITY
+// ======================
+// Block all non-API routes
+app.use((req, res) => {
+  res.status(403).json({ 
+    error: "Access forbidden",
+    details: "Only /chat endpoint is available"
+  });
+});
+
+// ======================
+// SERVER START
+// ======================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Production server running on port ${PORT}`);
+  console.log(`CORS restricted to: https://metrotexonline.vercel.app`);
+});
