@@ -17,11 +17,10 @@ app.use(cors({
 app.use(express.json());
 
 // ======================
-// STRICT API ROUTES
+// CHAT COMPLETION (Existing)
 // ======================
 app.post('/chat', async (req, res) => {
   try {
-    // Validate request format
     if (!req.body?.message) {
       return res.status(400).json({ 
         error: "Invalid request format",
@@ -29,7 +28,6 @@ app.post('/chat', async (req, res) => {
       });
     }
 
-    // Process with OpenRouter
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -48,18 +46,13 @@ app.post('/chat', async (req, res) => {
       }
     );
 
-    // Validate response
     const aiResponse = response.data.choices[0]?.message?.content;
     if (!aiResponse) throw new Error("Empty AI response");
 
-    // Send success
-    res.setHeader('Content-Type', 'application/json');
     res.json({ reply: aiResponse });
 
   } catch (error) {
-    console.error('API Error:', error.message);
-    
-    // Error response
+    console.error('Chat Error:', error.message);
     res.status(500).json({
       error: "AI service unavailable",
       details: error.response?.data?.error?.message || "Internal error"
@@ -68,13 +61,64 @@ app.post('/chat', async (req, res) => {
 });
 
 // ======================
+// IMAGE GENERATION (New)
+// ======================
+app.post('/generate-image', async (req, res) => {
+  try {
+    // Validate request
+    if (!req.body?.prompt) {
+      return res.status(400).json({ 
+        error: "Invalid request",
+        details: "Missing 'prompt' field"
+      });
+    }
+
+    // OpenRouter Image Generation
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/images/generations',
+      {
+        model: "stability-ai/sdxl", // Default model (change as needed)
+        prompt: req.body.prompt,
+        n: 1,
+        size: req.body.size || "1024x1024", // Default size
+        quality: "standard"
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": "https://metrotexonline.vercel.app",
+          "X-Title": "MetroTex AI",
+          "Content-Type": "application/json"
+        },
+        timeout: 30000 // Longer timeout for image generation
+      }
+    );
+
+    // Handle response (OpenRouter may return URL or base64)
+    const imageData = response.data.data[0]?.url || response.data.data[0]?.b64_json;
+    if (!imageData) throw new Error("No image data returned");
+
+    res.json({ 
+      image: imageData,
+      model: response.data.model 
+    });
+
+  } catch (error) {
+    console.error('Image Generation Error:', error.message);
+    res.status(500).json({
+      error: "Image generation failed",
+      details: error.response?.data?.error?.message || "Check server logs"
+    });
+  }
+});
+
+// ======================
 // PRODUCTION SECURITY
 // ======================
-// Block all non-API routes
 app.use((req, res) => {
   res.status(403).json({ 
     error: "Access forbidden",
-    details: "Only /chat endpoint is available"
+    details: "Only /chat and /generate-image endpoints are available"
   });
 });
 
@@ -83,6 +127,6 @@ app.use((req, res) => {
 // ======================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Production server running on port ${PORT}`);
-  console.log(`CORS restricted to: https://metrotexonline.vercel.app`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Allowed origins: https://metrotexonline.vercel.app`);
 });
