@@ -17,12 +17,12 @@ app.use(cors({
 app.use(express.json());
 
 // ======================
-// CHAT COMPLETION (Existing)
+// CHAT COMPLETION (OpenRouter)
 // ======================
 app.post('/chat', async (req, res) => {
   try {
     if (!req.body?.message) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Invalid request format",
         details: "Missing 'message' field"
       });
@@ -61,53 +61,42 @@ app.post('/chat', async (req, res) => {
 });
 
 // ======================
-// IMAGE GENERATION (New)
+// IMAGE GENERATION (DeepAI)
 // ======================
 app.post('/generate-image', async (req, res) => {
   try {
-    // Validate request
     if (!req.body?.prompt) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Invalid request",
         details: "Missing 'prompt' field"
       });
     }
 
-    // OpenRouter Image Generation
     const response = await axios.post(
-      'https://openrouter.ai/api/v1/images/generations',
-      {
-        model: "stability-ai/sdxl", // Default model (change as needed)
-        prompt: req.body.prompt,
-        n: 1,
-        size: req.body.size || "1024x1024", // Default size
-        quality: "standard"
-      },
+      'https://api.deepai.org/api/text2img',
+      new URLSearchParams({ text: req.body.prompt }),
       {
         headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "HTTP-Referer": "https://metrotexonline.vercel.app",
-          "X-Title": "MetroTex AI",
-          "Content-Type": "application/json"
+          'Api-Key': process.env.DEEPAI_API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded'
         },
-        timeout: 30000 // Longer timeout for image generation
+        timeout: 25000
       }
     );
 
-    // Handle response (OpenRouter may return URL or base64)
-    const imageData = response.data.data[0]?.url || response.data.data[0]?.b64_json;
-    if (!imageData) throw new Error("No image data returned");
+    const imageUrl = response.data.output_url;
+    if (!imageUrl) throw new Error("No image URL returned");
 
-    res.json({ 
-      image: imageData,
-      model: response.data.model 
+    res.json({
+      image: imageUrl,
+      model: "DeepAI Text2Img"
     });
 
   } catch (error) {
     console.error('Image Generation Error:', error.message);
     res.status(500).json({
       error: "Image generation failed",
-      details: error.response?.data?.error?.message || "Check server logs"
+      details: error.response?.data?.error?.message || "Internal server error"
     });
   }
 });
@@ -116,7 +105,7 @@ app.post('/generate-image', async (req, res) => {
 // PRODUCTION SECURITY
 // ======================
 app.use((req, res) => {
-  res.status(403).json({ 
+  res.status(403).json({
     error: "Access forbidden",
     details: "Only /chat and /generate-image endpoints are available"
   });
