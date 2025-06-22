@@ -5,34 +5,26 @@ const cors = require('cors');
 
 const app = express();
 
-// ======================
-// SECURE PRODUCTION SETUP
-// ======================
+// Middleware
 app.use(cors({
-  origin: 'https://metrotexonline.vercel.app', // ONLY your frontend URL
+  origin: 'https://metrotexonline.vercel.app',
   methods: ['POST'],
   allowedHeaders: ['Content-Type']
 }));
-
 app.use(express.json());
 
-// ======================
-// CHAT COMPLETION (OpenRouter)
-// ======================
+// 1. OpenRouter Chat Endpoint (unchanged)
 app.post('/chat', async (req, res) => {
   try {
-    if (!req.body?.message) {
-      return res.status(400).json({
-        error: "Invalid request format",
-        details: "Missing 'message' field"
-      });
+    if (!req.body?.message?.trim()) {
+      return res.status(400).json({ error: "Message cannot be empty" });
     }
 
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
         model: "mistralai/mistral-7b-instruct",
-        messages: [{ role: "user", content: req.body.message }],
+        messages: [{ role: "user", content: req.body.message.trim() }],
         temperature: 0.7
       },
       {
@@ -54,68 +46,91 @@ app.post('/chat', async (req, res) => {
   } catch (error) {
     console.error('Chat Error:', error.message);
     res.status(500).json({
-      error: "AI service unavailable",
-      details: error.response?.data?.error?.message || "Internal error"
+      error: "AI service error",
+      details: error.response?.data?.error?.message || error.message
     });
   }
 });
 
-// ======================
-// IMAGE GENERATION (DeepAI)
-// ======================
+// 2. Stable Horde Image Generation
 app.post('/generate-image', async (req, res) => {
   try {
-    if (!req.body?.prompt) {
-      return res.status(400).json({
-        error: "Invalid request",
-        details: "Missing 'prompt' field"
-      });
+    const { prompt } = req.body;
+
+    if (!prompt?.trim()) {
+      return res.status(400).json({ error: "Prompt cannot be empty" });
     }
 
-    const response = await axios.post(
-      'https://api.deepai.org/api/text2img',
-      new URLSearchParams({ text: req.body.prompt }),
+    // Step 1: Submit generation request
+    const submitResponse = await axios.post(
+      'https://stablehorde.net/api/v2/generate/async',
+      {
+        prompt: prompt.trim(),
+        params: {
+          n: 1,
+          width: 512,
+          height: 512,
+          steps: 30,
+        },
+        models: ["stable_diffusion"],
+      },
       {
         headers: {
-          'Api-Key': process.env.DEEPAI_API_KEY,
-          'Content-Type': 'application/x-www-form-urlencoded'
+          "Content-Type": "application/json",
+          "apikey": process.env.STABLE_HORDE_API_KEY || "0000000000" // Anonymous mode if no key
         },
-        timeout: 25000
+        timeout: 30000
       }
     );
 
-    const imageUrl = response.data.output_url;
-    if (!imageUrl) throw new Error("No image URL returned");
+    const jobId = submitResponse.data.id;
+
+    // Step 2: Check job status until completion
+    let imageUrl;
+    let attempts = 0;
+    const maxAttempts = 30; // ~30 seconds max wait
+
+    while (attempts < maxAttempts) {
+      const statusResponse = await axios.get(
+        `https://stablehorde.net/api/v2/generate/check/${jobId}`,
+        { timeout: 10000 }
+      );
+
+      if (statusResponse.data.done) {
+        // Step 3: Fetch generated image
+        const resultResponse = await axios.get(
+          `https://stablehorde.net/api/v2/generate/status/${jobId}`,
+          { timeout: 10000 }
+        );
+        imageUrl = resultResponse.data.generations[0].img;
+        break;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      attempts++;
+    }
+
+    if (!imageUrl) throw new Error("Image generation timeout");
 
     res.json({
       image: imageUrl,
-      model: "DeepAI Text2Img"
+      details: "Generated via Stable Horde"
     });
 
   } catch (error) {
-    console.error('Image Generation Error:', error.message);
+    console.error('Stable Horde Error:', error.message);
     res.status(500).json({
       error: "Image generation failed",
-      details: error.response?.data?.error?.message || "Internal server error"
+      details: error.response?.data?.message || error.message
     });
   }
 });
 
-// ======================
-// PRODUCTION SECURITY
-// ======================
-app.use((req, res) => {
-  res.status(403).json({
-    error: "Access forbidden",
-    details: "Only /chat and /generate-image endpoints are available"
-  });
-});
-
-// ======================
-// SERVER START
-// ======================
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Allowed origins: https://metrotexonline.vercel.app`);
+  console.log(`Endpoints:
+  - POST /chat
+  - POST /generate-image`);
 });
