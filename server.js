@@ -30,6 +30,7 @@ db.serialize(() => {
 // ======================
 app.use(cors({
   origin: 'https://metrotexonline.vercel.app',
+  'https://studious-octo-guide-5373vrurh4.onrender.com/'
   methods: ['POST'],
   allowedHeaders: ['Content-Type']
 }));
