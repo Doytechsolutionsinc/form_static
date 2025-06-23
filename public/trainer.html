@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metrotex Trainer</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Metrotex Knowledge Trainer</h1>
+            <p class="subtitle">Teach your AI assistant new information</p>
+        </header>
+        
+        <div class="status" id="status-message"></div>
+        
+        <form id="training-form" class="trainer-form">
+            <div class="form-group">
+                <label for="question">Question</label>
+                <input type="text" id="question" placeholder="What is the capital of France?" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="answer">Answer</label>
+                <textarea id="answer" placeholder="The capital of France is Paris." required></textarea>
+            </div>
+            
+            <button type="submit" id="train-btn" class="btn">
+                <span id="btn-text">Add to Knowledge Base</span>
+                <span id="btn-spinner" style="display:none;">⏳ Sending...</span>
+            </button>
+        </form>
+        
+        <div class="entries-list">
+            <h2>Recent Entries</h2>
+            <div id="entries-container">
+                <div class="loading">Loading knowledge entries...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const backendUrl = window.location.origin;
+        
+        // DOM Elements
+        const elements = {
+            form: document.getElementById('training-form'),
+            questionInput: document.getElementById('question'),
+            answerInput: document.getElementById('answer'),
+            trainBtn: document.getElementById('train-btn'),
+            btnText: document.getElementById('btn-text'),
+            btnSpinner: document.getElementById('btn-spinner'),
+            entriesContainer: document.getElementById('entries-container'),
+            statusMessage: document.getElementById('status-message')
+        };
+        
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            loadRecentEntries();
+            setupEventListeners();
+        });
+        
+        function setupEventListeners() {
+            elements.form.addEventListener('submit', handleFormSubmit);
+        }
+        
+        async function handleFormSubmit(e) {
+            e.preventDefault();
+            
+            const question = elements.questionInput.value.trim();
+            const answer = elements.answerInput.value.trim();
+            
+            if (!question || !answer) {
+                showStatus('Please fill in both question and answer fields', 'error');
+                return;
+            }
+            
+            setLoadingState(true);
+            
+            try {
+                const response = await fetch(`${backendUrl}/train`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question, answer })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Training failed');
+                }
+                
+                showStatus('Successfully added to knowledge base!', 'success');
+                elements.form.reset();
+                loadRecentEntries();
+            } catch (error) {
+                showStatus(`Error: ${error.message}`, 'error');
+                console.error('Training error:', error);
+            } finally {
+                setLoadingState(false);
+            }
+        }
+        
+        async function loadRecentEntries() {
+            try {
+                elements.entriesContainer.innerHTML = '<div class="loading">Loading knowledge entries...</div>';
+                
+                const response = await fetch(`${backendUrl}/recent-entries`);
+                if (!response.ok) throw new Error('Failed to load entries');
+                
+                const entries = await response.json();
+                
+                if (!entries || entries.length === 0) {
+                    elements.entriesContainer.innerHTML = '<p>No entries yet. Add your first question and answer above.</p>';
+                    return;
+                }
+                
+                renderEntries(entries);
+            } catch (error) {
+                elements.entriesContainer.innerHTML = `
+                    <div class="status error">
+                        Failed to load entries: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function renderEntries(entries) {
+            let html = '';
+            
+            entries.forEach(entry => {
+                html += `
+                    <div class="entry-item">
+                        <div class="entry-question">${escapeHtml(entry.question)}</div>
+                        <div class="entry-answer">${escapeHtml(entry.answer)}</div>
+                    </div>
+                `;
+            });
+            
+            elements.entriesContainer.innerHTML = html;
+        }
+        
+        function setLoadingState(isLoading) {
+            if (isLoading) {
+                elements.trainBtn.disabled = true;
+                elements.btnText.style.display = 'none';
+                elements.btnSpinner.style.display = 'inline';
+            } else {
+                elements.trainBtn.disabled = false;
+                elements.btnText.style.display = 'inline';
+                elements.btnSpinner.style.display = 'none';
+            }
+        }
+        
+        function showStatus(message, type) {
+            elements.statusMessage.textContent = message;
+            elements.statusMessage.className = `status ${type}`;
+            
+            setTimeout(() => {
+                elements.statusMessage.textContent = '';
+                elements.statusMessage.className = 'status';
+            }, 5000);
+        }
+        
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+  </html>
