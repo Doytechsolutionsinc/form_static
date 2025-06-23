@@ -1,10 +1,11 @@
 require('dotenv').config();
 const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');  // Now properly required
+const sqlite3 = require('sqlite3').verbose();
+const basicAuth = require('express-basic-auth');
+const cors = require('cors');
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 
@@ -16,6 +17,9 @@ const config = {
   DB_PATH: path.join(__dirname, 'knowledge.db'),
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   STABLE_HORDE_API_KEY: process.env.STABLE_HORDE_API_KEY || '0000000000',
+  AUTH_CREDS: {
+    users: { [process.env.TRAIN_USER || 'admin']: process.env.TRAIN_PASS || 'secret' }
+  },
   CORS_ORIGINS: [
     'https://metrotexonline.vercel.app',
     'http://localhost:3000'
@@ -66,29 +70,19 @@ class StableHorde {
 }
 
 // Middleware
-app.use(cors({ origin: config.CORS_ORIGINS }));
+app.use(cors({
+  origin: config.CORS_ORIGINS,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ======================
-// Core Endpoints
+// API Endpoints
 // ======================
 
-// 1. Training Endpoint
-app.post('/train', (req, res) => {
-  const { question, answer } = req.body;
-  if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
-
-  db.run(
-    `INSERT INTO knowledge (question, answer) VALUES (?, ?)`,
-    [question, answer],
-    function(err) {
-      if (err) return res.status(500).json({ error: "Database error" });
-      res.json({ success: true, id: this.lastID });
-    }
-  );
-});
-
-// 2. Chat Endpoint
+// 1. Chat Endpoint
 app.post('/chat', async (req, res) => {
   try {
     const { message } = req.body;
@@ -121,13 +115,13 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// 3. Image Generation
+// 2. Image Generation
 app.post('/generate-image', async (req, res) => {
   try {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
-    const imageId = uuidv4();  // Using UUID here
+    const imageId = uuidv4();
     const hordeJobId = await StableHorde.generateImage(prompt);
 
     db.run(
@@ -145,7 +139,7 @@ app.post('/generate-image', async (req, res) => {
   }
 });
 
-// Supporting endpoint
+// 3. Image Status Check
 app.get('/image-status/:imageId', async (req, res) => {
   const { imageId } = req.params;
   db.get(`SELECT horde_job_id FROM images WHERE id = ?`, [imageId], 
@@ -163,11 +157,55 @@ app.get('/image-status/:imageId', async (req, res) => {
   );
 });
 
-// Start server
+// 4. Training Endpoint
+app.post('/train', (req, res) => {
+  const { question, answer } = req.body;
+  if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
+
+  db.run(
+    `INSERT INTO knowledge (question, answer) VALUES (?, ?)`,
+    [question, answer],
+    function(err) {
+      if (err) return res.status(500).json({ error: "Database error" });
+      res.json({ success: true, id: this.lastID });
+    }
+  );
+});
+
+// 5. Get Recent Entries
+app.get('/recent-entries', (req, res) => {
+  db.all(
+    `SELECT question, answer FROM knowledge ORDER BY created_at DESC LIMIT 10`,
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: "Database error" });
+      res.json(rows);
+    }
+  );
+});
+
+// ======================
+// Training Interface
+// ======================
+
+// Protected training interface
+app.use('/trainer', basicAuth(config.AUTH_CREDS));
+app.get('/trainer', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public/trainer.html'));
+});
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date() });
+});
+
+// ======================
+// Start Server
+// ======================
 app.listen(config.PORT, () => {
-  console.log(`Server running on port ${config.PORT}`);
-  console.log(`Endpoints:
-  - POST /train
-  - POST /chat
-  - POST /generate-image`);
+  console.log(`Metrotex backend running on port ${config.PORT}`);
+  console.log(`Training interface: http://localhost:${config.PORT}/trainer`);
+  console.log(`API endpoints:`);
+  console.log(`- POST /chat`);
+  console.log(`- POST /generate-image`);
+  console.log(`- POST /train`);
 });
