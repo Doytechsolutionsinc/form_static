@@ -10,20 +10,20 @@
     <div class="container">
         <header>
             <h1>Metrotex Knowledge Trainer</h1>
-            <p class="subtitle">Teach your AI assistant new information</p>
+            <p class="subtitle">Teach your AI assistant - punctuation will be handled automatically</p>
         </header>
         
         <div class="status" id="status-message"></div>
         
         <form id="training-form" class="trainer-form">
             <div class="form-group">
-                <label for="question">Question</label>
-                <input type="text" id="question" placeholder="What is the capital of France?" required>
+                <label for="question">Question (auto-formatted)</label>
+                <input type="text" id="question" placeholder="What is AI" required>
             </div>
             
             <div class="form-group">
                 <label for="answer">Answer</label>
-                <textarea id="answer" placeholder="The capital of France is Paris." required></textarea>
+                <textarea id="answer" placeholder="Artificial Intelligence is..." required></textarea>
             </div>
             
             <button type="submit" id="train-btn" class="btn">
@@ -41,46 +41,31 @@
     </div>
 
     <script>
-        // Configuration
-        const backendUrl = window.location.origin;
-        
-        // DOM Elements
-        const elements = {
-            form: document.getElementById('training-form'),
-            questionInput: document.getElementById('question'),
-            answerInput: document.getElementById('answer'),
-            trainBtn: document.getElementById('train-btn'),
-            btnText: document.getElementById('btn-text'),
-            btnSpinner: document.getElementById('btn-spinner'),
-            entriesContainer: document.getElementById('entries-container'),
-            statusMessage: document.getElementById('status-message')
-        };
-        
-        // Initialize the application
-        document.addEventListener('DOMContentLoaded', () => {
-            loadRecentEntries();
-            setupEventListeners();
+        // Auto-format questions
+        document.getElementById('question').addEventListener('blur', function() {
+            let question = this.value.trim();
+            if (!/[?.!]$/.test(question)) {
+                question = question.replace(/\?+$/, '') + '?';
+                this.value = question;
+            }
         });
-        
-        function setupEventListeners() {
-            elements.form.addEventListener('submit', handleFormSubmit);
-        }
-        
-        async function handleFormSubmit(e) {
+
+        // Training form submission
+        document.getElementById('training-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            const question = elements.questionInput.value.trim();
-            const answer = elements.answerInput.value.trim();
+            const question = document.getElementById('question').value.trim();
+            const answer = document.getElementById('answer').value.trim();
             
             if (!question || !answer) {
-                showStatus('Please fill in both question and answer fields', 'error');
+                showStatus('Please fill in both fields', 'error');
                 return;
             }
-            
+
             setLoadingState(true);
             
             try {
-                const response = await fetch(`${backendUrl}/train`, {
+                const response = await fetch('/train', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -93,8 +78,9 @@
                     throw new Error(error.error || 'Training failed');
                 }
                 
-                showStatus('Successfully added to knowledge base!', 'success');
-                elements.form.reset();
+                showStatus('Successfully trained!', 'success');
+                document.getElementById('question').value = '';
+                document.getElementById('answer').value = '';
                 loadRecentEntries();
             } catch (error) {
                 showStatus(`Error: ${error.message}`, 'error');
@@ -102,77 +88,64 @@
             } finally {
                 setLoadingState(false);
             }
-        }
-        
+        });
+
         async function loadRecentEntries() {
             try {
-                elements.entriesContainer.innerHTML = '<div class="loading">Loading knowledge entries...</div>';
-                
-                const response = await fetch(`${backendUrl}/recent-entries`);
+                const response = await fetch('/recent-entries');
                 if (!response.ok) throw new Error('Failed to load entries');
                 
                 const entries = await response.json();
-                
-                if (!entries || entries.length === 0) {
-                    elements.entriesContainer.innerHTML = '<p>No entries yet. Add your first question and answer above.</p>';
-                    return;
-                }
-                
                 renderEntries(entries);
             } catch (error) {
-                elements.entriesContainer.innerHTML = `
+                document.getElementById('entries-container').innerHTML = `
                     <div class="status error">
-                        Failed to load entries: ${error.message}
+                        Error loading entries: ${error.message}
                     </div>
                 `;
             }
         }
-        
+
         function renderEntries(entries) {
-            let html = '';
+            const container = document.getElementById('entries-container');
+            container.innerHTML = entries.length ? '' : '<p>No entries yet</p>';
             
             entries.forEach(entry => {
-                html += `
-                    <div class="entry-item">
-                        <div class="entry-question">${escapeHtml(entry.question)}</div>
-                        <div class="entry-answer">${escapeHtml(entry.answer)}</div>
-                    </div>
+                const entryEl = document.createElement('div');
+                entryEl.className = 'entry-item';
+                entryEl.innerHTML = `
+                    <div class="entry-question">${escapeHtml(entry.question)}</div>
+                    <div class="entry-answer">${escapeHtml(entry.answer)}</div>
                 `;
+                container.appendChild(entryEl);
             });
-            
-            elements.entriesContainer.innerHTML = html;
         }
-        
+
         function setLoadingState(isLoading) {
-            if (isLoading) {
-                elements.trainBtn.disabled = true;
-                elements.btnText.style.display = 'none';
-                elements.btnSpinner.style.display = 'inline';
-            } else {
-                elements.trainBtn.disabled = false;
-                elements.btnText.style.display = 'inline';
-                elements.btnSpinner.style.display = 'none';
-            }
+            const btn = document.getElementById('train-btn');
+            btn.disabled = isLoading;
+            document.getElementById('btn-text').style.display = isLoading ? 'none' : 'inline';
+            document.getElementById('btn-spinner').style.display = isLoading ? 'inline' : 'none';
         }
-        
+
         function showStatus(message, type) {
-            elements.statusMessage.textContent = message;
-            elements.statusMessage.className = `status ${type}`;
-            
-            setTimeout(() => {
-                elements.statusMessage.textContent = '';
-                elements.statusMessage.className = 'status';
-            }, 5000);
+            const statusEl = document.getElementById('status-message');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+            setTimeout(() => statusEl.textContent = '', 5000);
         }
-        
-        function escapeHtml(unsafe) {
-            return unsafe
+
+        function escapeHtml(text) {
+            return text
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
         }
+
+        // Load initial entries
+        loadRecentEntries();
     </script>
 </body>
-  </html>
+</html>
