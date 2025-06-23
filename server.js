@@ -26,6 +26,7 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS knowledge (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     question TEXT NOT NULL,
+    normalized_question TEXT NOT NULL,
     answer TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
@@ -38,7 +39,19 @@ db.serialize(() => {
     image_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  // Create index for faster searches
+  db.run('CREATE INDEX IF NOT EXISTS idx_normalized_question ON knowledge(normalized_question)');
 });
+
+// Text normalization function
+function normalizeText(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')  // Remove punctuation
+    .replace(/\s+/g, ' ')     // Collapse multiple spaces
+    .trim();
+}
 
 // Stable Horde Service
 class StableHorde {
@@ -76,16 +89,31 @@ app.use(express.static(path.join(__dirname, 'public')));
 // API Endpoints
 // ======================
 
-// Chat endpoint
+// Chat endpoint with improved matching
 app.post('/chat', async (req, res) => {
   try {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
 
-    db.get(`SELECT answer FROM knowledge WHERE question LIKE ?`, [`%${message}%`], 
+    const normalizedMessage = normalizeText(message);
+
+    db.get(
+      `SELECT answer FROM knowledge 
+      WHERE normalized_question LIKE ? 
+      ORDER BY LENGTH(question) DESC 
+      LIMIT 1`,
+      [`%${normalizedMessage}%`],
       async (err, row) => {
-        if (row) return res.json({ reply: row.answer, source: "local" });
+        if (err) {
+          console.error('Database error:', err);
+          return res.status(500).json({ error: "Database error" });
+        }
+
+        if (row) {
+          return res.json({ reply: row.answer, source: "local" });
+        }
         
+        // Fallback to API
         const aiResponse = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
           {
@@ -103,11 +131,34 @@ app.post('/chat', async (req, res) => {
       }
     );
   } catch (error) {
+    console.error('Chat error:', error);
     res.status(500).json({ error: "Chat processing failed" });
   }
 });
 
-// Image generation
+// Training endpoint with auto-normalization
+app.post('/train', (req, res) => {
+  let { question, answer } = req.body;
+  if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
+
+  // Normalize before storing
+  question = question.trim();
+  const normalizedQuestion = normalizeText(question);
+
+  db.run(
+    `INSERT INTO knowledge (question, normalized_question, answer) VALUES (?, ?, ?)`,
+    [question, normalizedQuestion, answer],
+    function(err) {
+      if (err) {
+        console.error('Training error:', err);
+        return res.status(500).json({ error: "Database error" });
+      }
+      res.json({ success: true, id: this.lastID });
+    }
+  );
+});
+
+// Image generation (unchanged)
 app.post('/generate-image', async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -127,11 +178,12 @@ app.post('/generate-image', async (req, res) => {
       checkUrl: `/image-status/${imageId}`
     });
   } catch (error) {
+    console.error('Image generation error:', error);
     res.status(500).json({ error: "Image generation failed" });
   }
 });
 
-// Image status check
+// Image status check (unchanged)
 app.get('/image-status/:imageId', async (req, res) => {
   const { imageId } = req.params;
   db.get(`SELECT horde_job_id FROM images WHERE id = ?`, [imageId], 
@@ -149,27 +201,15 @@ app.get('/image-status/:imageId', async (req, res) => {
   );
 });
 
-// Training endpoint
-app.post('/train', (req, res) => {
-  const { question, answer } = req.body;
-  if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
-
-  db.run(
-    `INSERT INTO knowledge (question, answer) VALUES (?, ?)`,
-    [question, answer],
-    function(err) {
-      if (err) return res.status(500).json({ error: "Database error" });
-      res.json({ success: true, id: this.lastID });
-    }
-  );
-});
-
-// Get recent entries
+// Get recent entries (updated to show original questions)
 app.get('/recent-entries', (req, res) => {
   db.all(
     `SELECT question, answer FROM knowledge ORDER BY created_at DESC LIMIT 10`,
     (err, rows) => {
-      if (err) return res.status(500).json({ error: "Database error" });
+      if (err) {
+        console.error('Recent entries error:', err);
+        return res.status(500).json({ error: "Database error" });
+      }
       res.json(rows);
     }
   );
@@ -182,11 +222,20 @@ app.get('/trainer', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date() });
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date(),
+    db: config.DB_PATH,
+    origins: config.CORS_ORIGINS 
+  });
 });
 
 // Start server
 app.listen(config.PORT, () => {
   console.log(`Server running on port ${config.PORT}`);
   console.log(`Training interface: http://localhost:${config.PORT}/trainer`);
+  console.log(`API Documentation:`);
+  console.log(`- POST /chat - For chatting with your AI`);
+  console.log(`- POST /train - To add new knowledge`);
+  console.log(`- POST /generate-image - For image generation`);
 });
