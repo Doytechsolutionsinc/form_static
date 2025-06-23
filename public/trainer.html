@@ -4,148 +4,228 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Metrotex Trainer</title>
-    <link rel="stylesheet" href="/styles.css">
+    <style>
+        :root {
+            --primary: #4361ee;
+            --secondary: #3f37c9;
+            --success: #4cc9f0;
+            --danger: #f72585;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background: #f5f7fa;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        h1 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+        
+        .input-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        .input-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .question-input, .answer-input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        
+        .answer-input {
+            min-height: 80px;
+            resize: vertical;
+        }
+        
+        .add-btn {
+            width: 40px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+        
+        .add-btn:hover {
+            background: var(--secondary);
+        }
+        
+        .submit-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+        }
+        
+        .submit-btn:hover {
+            background: var(--secondary);
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .status.success {
+            background-color: rgba(76, 201, 240, 0.2);
+            border-left: 4px solid var(--success);
+            color: var(--success);
+            display: block;
+        }
+        
+        .status.error {
+            background-color: rgba(247, 37, 133, 0.2);
+            border-left: 4px solid var(--danger);
+            color: var(--danger);
+            display: block;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Metrotex Knowledge Trainer</h1>
-            <p class="subtitle">Teach your AI assistant - punctuation will be handled automatically</p>
+            <p>Add multiple questions and answers for richer responses</p>
         </header>
         
         <div class="status" id="status-message"></div>
         
-        <form id="training-form" class="trainer-form">
-            <div class="form-group">
-                <label for="question">Question (auto-formatted)</label>
-                <input type="text" id="question" placeholder="What is AI" required>
+        <form id="training-form">
+            <div class="input-group">
+                <label>Questions (Add multiple ways to ask the same thing)</label>
+                <div id="question-container">
+                    <div class="input-row">
+                        <input type="text" class="question-input" placeholder="What is AI?">
+                        <button type="button" class="add-btn" onclick="addInput('question')">+</button>
+                    </div>
+                </div>
             </div>
             
-            <div class="form-group">
-                <label for="answer">Answer</label>
-                <textarea id="answer" placeholder="Artificial Intelligence is..." required></textarea>
+            <div class="input-group">
+                <label>Answers (Add multiple possible responses)</label>
+                <div id="answer-container">
+                    <div class="input-row">
+                        <textarea class="answer-input" placeholder="Artificial Intelligence is..."></textarea>
+                        <button type="button" class="add-btn" onclick="addInput('answer')">+</button>
+                    </div>
+                </div>
             </div>
             
-            <button type="submit" id="train-btn" class="btn">
-                <span id="btn-text">Add to Knowledge Base</span>
-                <span id="btn-spinner" style="display:none;">⏳ Sending...</span>
-            </button>
+            <button type="submit" class="submit-btn">Train All Variations</button>
         </form>
-        
-        <div class="entries-list">
-            <h2>Recent Entries</h2>
-            <div id="entries-container">
-                <div class="loading">Loading knowledge entries...</div>
-            </div>
-        </div>
     </div>
 
     <script>
-        // Auto-format questions
-        document.getElementById('question').addEventListener('blur', function() {
-            let question = this.value.trim();
-            if (!/[?.!]$/.test(question)) {
-                question = question.replace(/\?+$/, '') + '?';
-                this.value = question;
+        function addInput(type) {
+            const container = document.getElementById(`${type}-container`);
+            const newRow = document.createElement('div');
+            newRow.className = 'input-row';
+            
+            if (type === 'question') {
+                newRow.innerHTML = `
+                    <input type="text" class="question-input" placeholder="Alternative phrasing...">
+                    <button type="button" class="add-btn" onclick="addInput('question')">+</button>
+                `;
+            } else {
+                newRow.innerHTML = `
+                    <textarea class="answer-input" placeholder="Alternative answer..."></textarea>
+                    <button type="button" class="add-btn" onclick="addInput('answer')">+</button>
+                `;
             }
-        });
+            
+            container.appendChild(newRow);
+        }
 
-        // Training form submission
-        document.getElementById('training-form').addEventListener('submit', async function(e) {
+        document.getElementById('training-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const question = document.getElementById('question').value.trim();
-            const answer = document.getElementById('answer').value.trim();
+            const questions = Array.from(document.querySelectorAll('.question-input'))
+                .map(input => input.value.trim())
+                .filter(q => q);
+                
+            const answers = Array.from(document.querySelectorAll('.answer-input'))
+                .map(input => input.value.trim())
+                .filter(a => a);
             
-            if (!question || !answer) {
-                showStatus('Please fill in both fields', 'error');
+            if (!questions.length || !answers.length) {
+                showStatus('Please add at least one question and one answer', 'error');
                 return;
             }
 
-            setLoadingState(true);
-            
             try {
                 const response = await fetch('/train', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ question, answer })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ questions, answers })
                 });
                 
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Training failed');
+                const result = await response.json();
+                if (response.ok) {
+                    showStatus(`Trained ${questions.length} question(s) with ${answers.length} answer(s)!`, 'success');
+                    // Clear all but first inputs
+                    document.querySelectorAll('.input-row').forEach((row, i) => {
+                        if (i > 0) row.remove();
+                    });
+                    document.querySelector('.question-input').value = '';
+                    document.querySelector('.answer-input').value = '';
+                } else {
+                    throw new Error(result.error || 'Training failed');
                 }
-                
-                showStatus('Successfully trained!', 'success');
-                document.getElementById('question').value = '';
-                document.getElementById('answer').value = '';
-                loadRecentEntries();
-            } catch (error) {
-                showStatus(`Error: ${error.message}`, 'error');
-                console.error('Training error:', error);
-            } finally {
-                setLoadingState(false);
+            } catch (err) {
+                showStatus(`Error: ${err.message}`, 'error');
+                console.error(err);
             }
         });
-
-        async function loadRecentEntries() {
-            try {
-                const response = await fetch('/recent-entries');
-                if (!response.ok) throw new Error('Failed to load entries');
-                
-                const entries = await response.json();
-                renderEntries(entries);
-            } catch (error) {
-                document.getElementById('entries-container').innerHTML = `
-                    <div class="status error">
-                        Error loading entries: ${error.message}
-                    </div>
-                `;
-            }
-        }
-
-        function renderEntries(entries) {
-            const container = document.getElementById('entries-container');
-            container.innerHTML = entries.length ? '' : '<p>No entries yet</p>';
-            
-            entries.forEach(entry => {
-                const entryEl = document.createElement('div');
-                entryEl.className = 'entry-item';
-                entryEl.innerHTML = `
-                    <div class="entry-question">${escapeHtml(entry.question)}</div>
-                    <div class="entry-answer">${escapeHtml(entry.answer)}</div>
-                `;
-                container.appendChild(entryEl);
-            });
-        }
-
-        function setLoadingState(isLoading) {
-            const btn = document.getElementById('train-btn');
-            btn.disabled = isLoading;
-            document.getElementById('btn-text').style.display = isLoading ? 'none' : 'inline';
-            document.getElementById('btn-spinner').style.display = isLoading ? 'inline' : 'none';
-        }
 
         function showStatus(message, type) {
             const statusEl = document.getElementById('status-message');
             statusEl.textContent = message;
             statusEl.className = `status ${type}`;
-            setTimeout(() => statusEl.textContent = '', 5000);
+            setTimeout(() => {
+                statusEl.textContent = '';
+                statusEl.className = 'status';
+            }, 5000);
         }
-
-        function escapeHtml(text) {
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        // Load initial entries
-        loadRecentEntries();
     </script>
 </body>
 </html>
