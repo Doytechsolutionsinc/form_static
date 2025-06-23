@@ -22,7 +22,8 @@ const config = {
   },
   CORS_ORIGINS: [
     'https://metrotexonline.vercel.app',
-    'http://localhost:3000'
+    'http://localhost:3000',
+    'https://metrotex-backend-be5v.onrender.com'
   ]
 };
 
