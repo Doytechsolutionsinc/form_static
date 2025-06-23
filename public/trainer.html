@@ -3,199 +3,149 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Metrotex AI Trainer</title>
+    <title>Metrotex Trainer</title>
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Metrotex Knowledge Trainer</h1>
-            <p class="subtitle">Teach your AI with multiple question/answer variations</p>
+            <p class="subtitle">Teach your AI assistant - punctuation will be handled automatically</p>
         </header>
         
-        <div id="status" class="status"></div>
+        <div class="status" id="status-message"></div>
         
-        <form id="training-form">
-            <div class="form-section">
-                <h2><span class="icon">❓</span> Questions</h2>
-                <div id="questions-container">
-                    <div class="input-group">
-                        <input type="text" class="question-input" placeholder="Main question" required>
-                        <button type="button" class="btn-remove" onclick="removeField(this)">×</button>
-                    </div>
-                </div>
-                <button type="button" class="btn-add" onclick="addField('question')">
-                    + Add Question Variation
-                </button>
+        <form id="training-form" class="trainer-form">
+            <div class="form-group">
+                <label for="question">Question (auto-formatted)</label>
+                <input type="text" id="question" placeholder="What is AI" required>
             </div>
             
-            <div class="form-section">
-                <h2><span class="icon">💡</span> Answers</h2>
-                <div id="answers-container">
-                    <div class="input-group">
-                        <textarea class="answer-input" placeholder="Main answer" required></textarea>
-                        <button type="button" class="btn-remove" onclick="removeField(this)">×</button>
-                    </div>
-                </div>
-                <button type="button" class="btn-add" onclick="addField('answer')">
-                    + Add Answer Variation
-                </button>
+            <div class="form-group">
+                <label for="answer">Answer</label>
+                <textarea id="answer" placeholder="Artificial Intelligence is..." required></textarea>
             </div>
             
-            <button type="submit" class="btn-submit">
-                <span class="btn-text">🚀 Train All Variations</span>
-                <span class="btn-loader">⏳ Training...</span>
+            <button type="submit" id="train-btn" class="btn">
+                <span id="btn-text">Add to Knowledge Base</span>
+                <span id="btn-spinner" style="display:none;">⏳ Sending...</span>
             </button>
         </form>
         
-        <div class="recent-entries">
-            <h2><span class="icon">🕒</span> Recently Added</h2>
-            <div id="entries-list">
-                <p>No entries yet. Start training above!</p>
+        <div class="entries-list">
+            <h2>Recent Entries</h2>
+            <div id="entries-container">
+                <div class="loading">Loading knowledge entries...</div>
             </div>
         </div>
     </div>
 
     <script>
-        // DOM Elements
-        const statusEl = document.getElementById('status');
-        const form = document.getElementById('training-form');
-        
-        // Add new input field
-        function addField(type) {
-            const container = document.getElementById(`${type}s-container`);
-            const newGroup = document.createElement('div');
-            newGroup.className = 'input-group';
-            
-            if (type === 'question') {
-                newGroup.innerHTML = `
-                    <input type="text" class="question-input" placeholder="Alternative phrasing">
-                    <button type="button" class="btn-remove" onclick="removeField(this)">×</button>
-                `;
-            } else {
-                newGroup.innerHTML = `
-                    <textarea class="answer-input" placeholder="Alternative answer"></textarea>
-                    <button type="button" class="btn-remove" onclick="removeField(this)">×</button>
-                `;
-            }
-            
-            container.appendChild(newGroup);
-        }
-        
-        // Remove field
-        function removeField(btn) {
-            const groups = document.querySelectorAll('.input-group');
-            if (groups.length > 1) {
-                btn.parentElement.remove();
-            } else {
-                showStatus('You need at least one question and answer', 'error');
-            }
-        }
-        
-        // Form submission
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            setLoading(true);
-            
-            // Collect all questions and answers
-            const questions = Array.from(document.querySelectorAll('.question-input'))
-                .map(el => el.value.trim())
-                .filter(q => q);
-                
-            const answers = Array.from(document.querySelectorAll('.answer-input'))
-                .map(el => el.value.trim())
-                .filter(a => a);
-            
-            // Validate
-            if (questions.length === 0 || answers.length === 0) {
-                showStatus('Please add at least one question and answer', 'error');
-                setLoading(false);
-                return;
-            }
-            
-            try {
-                // Send to backend
-                const response = await fetch('/train', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ questions, answers })
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    showStatus(
-                        `✅ Success! Trained ${questions.length} question(s) with ${answers.length} answer(s)`,
-                        'success'
-                    );
-                    // Reset form but keep first fields
-                    document.querySelectorAll('.input-group').forEach((el, i) => {
-                        if (i > 0) el.remove();
-                    });
-                    document.querySelector('.question-input').value = '';
-                    document.querySelector('.answer-input').value = '';
-                    loadRecentEntries();
-                } else {
-                    throw new Error(result.error || 'Training failed');
-                }
-            } catch (err) {
-                showStatus(`❌ Error: ${err.message}`, 'error');
-                console.error('Training error:', err);
-            } finally {
-                setLoading(false);
+        // Auto-format questions
+        document.getElementById('question').addEventListener('blur', function() {
+            let question = this.value.trim();
+            if (!/[?.!]$/.test(question)) {
+                question = question.replace(/\?+$/, '') + '?';
+                this.value = question;
             }
         });
-        
-        // Load recent entries
+
+        // Training form submission
+        document.getElementById('training-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const question = document.getElementById('question').value.trim();
+            const answer = document.getElementById('answer').value.trim();
+            
+            if (!question || !answer) {
+                showStatus('Please fill in both fields', 'error');
+                return;
+            }
+
+            setLoadingState(true);
+            
+            try {
+                const response = await fetch('/train', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question, answer })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Training failed');
+                }
+                
+                showStatus('Successfully trained!', 'success');
+                document.getElementById('question').value = '';
+                document.getElementById('answer').value = '';
+                loadRecentEntries();
+            } catch (error) {
+                showStatus(`Error: ${error.message}`, 'error');
+                console.error('Training error:', error);
+            } finally {
+                setLoadingState(false);
+            }
+        });
+
         async function loadRecentEntries() {
             try {
                 const response = await fetch('/recent-entries');
+                if (!response.ok) throw new Error('Failed to load entries');
+                
                 const entries = await response.json();
-                
-                const entriesList = document.getElementById('entries-list');
-                if (!entries.length) {
-                    entriesList.innerHTML = '<p>No entries yet</p>';
-                    return;
-                }
-                
-                entriesList.innerHTML = entries.map(entry => `
-                    <div class="entry">
-                        <div class="entry-question">${escapeHtml(entry.question)}</div>
-                        <div class="entry-answer">${escapeHtml(entry.answer)}</div>
+                renderEntries(entries);
+            } catch (error) {
+                document.getElementById('entries-container').innerHTML = `
+                    <div class="status error">
+                        Error loading entries: ${error.message}
                     </div>
-                `).join('');
-            } catch (err) {
-                console.error('Failed to load entries:', err);
+                `;
             }
         }
-        
-        // Helper functions
-        function setLoading(isLoading) {
-            const btn = document.querySelector('.btn-submit');
-            btn.disabled = isLoading;
-            document.querySelector('.btn-text').style.display = 
-                isLoading ? 'none' : 'inline';
-            document.querySelector('.btn-loader').style.display = 
-                isLoading ? 'inline' : 'none';
+
+        function renderEntries(entries) {
+            const container = document.getElementById('entries-container');
+            container.innerHTML = entries.length ? '' : '<p>No entries yet</p>';
+            
+            entries.forEach(entry => {
+                const entryEl = document.createElement('div');
+                entryEl.className = 'entry-item';
+                entryEl.innerHTML = `
+                    <div class="entry-question">${escapeHtml(entry.question)}</div>
+                    <div class="entry-answer">${escapeHtml(entry.answer)}</div>
+                `;
+                container.appendChild(entryEl);
+            });
         }
-        
+
+        function setLoadingState(isLoading) {
+            const btn = document.getElementById('train-btn');
+            btn.disabled = isLoading;
+            document.getElementById('btn-text').style.display = isLoading ? 'none' : 'inline';
+            document.getElementById('btn-spinner').style.display = isLoading ? 'inline' : 'none';
+        }
+
         function showStatus(message, type) {
+            const statusEl = document.getElementById('status-message');
             statusEl.textContent = message;
             statusEl.className = `status ${type}`;
-            setTimeout(() => {
-                statusEl.textContent = '';
-                statusEl.className = 'status';
-            }, 5000);
+            setTimeout(() => statusEl.textContent = '', 5000);
         }
-        
+
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
-        
-        // Initial load
+
+        // Load initial entries
         loadRecentEntries();
     </script>
 </body>
-    </html>
+</html>
