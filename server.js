@@ -2,8 +2,28 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 const app = express();
+
+// ======================
+// Database Setup
+// ======================
+const dbPath = path.join(__dirname, 'database.db');
+const db = new sqlite3.Database(dbPath);
+
+// Initialize database table if it doesn't exist
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS qa_pairs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      question TEXT UNIQUE,
+      answer TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+});
 
 // ======================
 // Middleware
@@ -16,7 +36,36 @@ app.use(cors({
 app.use(express.json());
 
 // ======================
-// 1. OpenRouter Chat
+// Helper Functions
+// ======================
+async function queryDatabase(question) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      "SELECT answer FROM qa_pairs WHERE question = ?",
+      [question.trim().toLowerCase()],
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(row ? row.answer : null);
+      }
+    );
+  });
+}
+
+async function addToDatabase(question, answer) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      "INSERT OR IGNORE INTO qa_pairs (question, answer) VALUES (?, ?)",
+      [question.trim().toLowerCase(), answer],
+      function(err) {
+        if (err) return reject(err);
+        resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+// ======================
+// 1. Enhanced Chat Endpoint
 // ======================
 app.post('/chat', async (req, res) => {
   try {
@@ -24,11 +73,20 @@ app.post('/chat', async (req, res) => {
       return res.status(400).json({ error: "Message cannot be empty" });
     }
 
+    const userMessage = req.body.message.trim();
+    
+    // First check the database
+    const dbAnswer = await queryDatabase(userMessage);
+    if (dbAnswer) {
+      return res.json({ reply: dbAnswer, source: "database" });
+    }
+
+    // If not found in database, use OpenRouter
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
         model: "mistralai/mistral-7b-instruct",
-        messages: [{ role: "user", content: req.body.message.trim() }],
+        messages: [{ role: "user", content: userMessage }],
         temperature: 0.7
       },
       {
@@ -45,7 +103,12 @@ app.post('/chat', async (req, res) => {
     const aiResponse = response.data.choices[0]?.message?.content;
     if (!aiResponse) throw new Error("Empty AI response");
 
-    res.json({ reply: aiResponse });
+    // Store the new Q&A pair in database (non-blocking)
+    addToDatabase(userMessage, aiResponse).catch(e => 
+      console.error('Failed to save to database:', e.message)
+    );
+
+    res.json({ reply: aiResponse, source: "openrouter" });
 
   } catch (error) {
     console.error('Chat Error:', error.message);
@@ -57,7 +120,7 @@ app.post('/chat', async (req, res) => {
 });
 
 // ======================
-// 2. Stable Horde Image Generation
+// 2. Stable Horde Image Generation (UNCHANGED)
 // ======================
 app.post('/generate-image', async (req, res) => {
   try {
@@ -141,12 +204,69 @@ app.post('/generate-image', async (req, res) => {
 });
 
 // ======================
+// 3. Database Management Endpoints (NEW)
+// ======================
+app.post('/add-to-db', async (req, res) => {
+  try {
+    const { question, answer } = req.body;
+    
+    if (!question?.trim() || !answer?.trim()) {
+      return res.status(400).json({ error: "Both question and answer are required" });
+    }
+
+    const added = await addToDatabase(question, answer);
+    if (!added) {
+      return res.status(409).json({ message: "Question already exists in database" });
+    }
+
+    res.json({ success: true, message: "Added to database" });
+  } catch (error) {
+    console.error('Database Add Error:', error.message);
+    res.status(500).json({ error: "Failed to add to database" });
+  }
+});
+
+app.get('/search-db', async (req, res) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query?.trim()) {
+      return res.status(400).json({ error: "Search query is required" });
+    }
+
+    const results = await new Promise((resolve, reject) => {
+      db.all(
+        "SELECT question, answer FROM qa_pairs WHERE question LIKE ? LIMIT 20",
+        [`%${query.trim().toLowerCase()}%`],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        }
+      );
+    });
+
+    res.json({ results });
+  } catch (error) {
+    console.error('Database Search Error:', error.message);
+    res.status(500).json({ error: "Database search failed" });
+  }
+});
+
+// ======================
 // Server Start
 // ======================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📝 Endpoints:
-  - POST /chat (OpenRouter)
-  - POST /generate-image (Stable Horde)`);
+  - POST /chat (Database + OpenRouter)
+  - POST /generate-image (Stable Horde)
+  - POST /add-to-db (Add Q&A to database)
+  - GET /search-db?query=... (Search database)`);
+});
+
+// Close database connection on process exit
+process.on('SIGINT', () => {
+  db.close();
+  process.exit();
 });
