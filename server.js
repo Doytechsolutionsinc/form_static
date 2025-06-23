@@ -2,28 +2,21 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
-const basicAuth = require('express-basic-auth');
 const cors = require('cors');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 
-// ======================
 // Configuration
-// ======================
 const config = {
   PORT: process.env.PORT || 3000,
   DB_PATH: path.join(__dirname, 'knowledge.db'),
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   STABLE_HORDE_API_KEY: process.env.STABLE_HORDE_API_KEY || '0000000000',
-  AUTH_CREDS: {
-    users: { [process.env.TRAIN_USER || 'admin']: process.env.TRAIN_PASS || 'secret' }
-  },
   CORS_ORIGINS: [
     'https://metrotexonline.vercel.app',
-    'http://localhost:3000',
-    'https://metrotex-backend-be5v.onrender.com'
+    'http://localhost:3000'
   ]
 };
 
@@ -83,18 +76,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 // API Endpoints
 // ======================
 
-// 1. Chat Endpoint
+// Chat endpoint
 app.post('/chat', async (req, res) => {
   try {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
 
-    // Check local knowledge first
     db.get(`SELECT answer FROM knowledge WHERE question LIKE ?`, [`%${message}%`], 
       async (err, row) => {
         if (row) return res.json({ reply: row.answer, source: "local" });
         
-        // Fallback to OpenRouter
         const aiResponse = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
           {
@@ -116,7 +107,7 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// 2. Image Generation
+// Image generation
 app.post('/generate-image', async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -140,7 +131,7 @@ app.post('/generate-image', async (req, res) => {
   }
 });
 
-// 3. Image Status Check
+// Image status check
 app.get('/image-status/:imageId', async (req, res) => {
   const { imageId } = req.params;
   db.get(`SELECT horde_job_id FROM images WHERE id = ?`, [imageId], 
@@ -158,7 +149,7 @@ app.get('/image-status/:imageId', async (req, res) => {
   );
 });
 
-// 4. Training Endpoint
+// Training endpoint
 app.post('/train', (req, res) => {
   const { question, answer } = req.body;
   if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
@@ -173,7 +164,7 @@ app.post('/train', (req, res) => {
   );
 });
 
-// 5. Get Recent Entries
+// Get recent entries
 app.get('/recent-entries', (req, res) => {
   db.all(
     `SELECT question, answer FROM knowledge ORDER BY created_at DESC LIMIT 10`,
@@ -184,14 +175,9 @@ app.get('/recent-entries', (req, res) => {
   );
 });
 
-// ======================
-// Training Interface
-// ======================
-
-// Protected training interface
-app.use('/trainer', basicAuth(config.AUTH_CREDS));
+// Training interface route (NO AUTH)
 app.get('/trainer', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public/trainer.html'));
+  res.sendFile(path.join(__dirname, 'public', 'trainer.html'));
 });
 
 // Health check
@@ -199,14 +185,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date() });
 });
 
-// ======================
-// Start Server
-// ======================
+// Start server
 app.listen(config.PORT, () => {
-  console.log(`Metrotex backend running on port ${config.PORT}`);
+  console.log(`Server running on port ${config.PORT}`);
   console.log(`Training interface: http://localhost:${config.PORT}/trainer`);
-  console.log(`API endpoints:`);
-  console.log(`- POST /chat`);
-  console.log(`- POST /generate-image`);
-  console.log(`- POST /train`);
 });
