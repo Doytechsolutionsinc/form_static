@@ -5,24 +5,44 @@ const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
 
 const app = express();
 
 // Configuration
 const config = {
   PORT: process.env.PORT || 3000,
-  DB_PATH: path.join(__dirname, 'knowledge.db'),
+  DB_PATH: process.env.NODE_ENV === 'production' 
+    ? '/var/lib/data/knowledge.db'
+    : path.join(__dirname, 'data', 'knowledge.db'),
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   STABLE_HORDE_API_KEY: process.env.STABLE_HORDE_API_KEY || '0000000000',
-  CORS_ORIGINS: [
+  CORS_ORIGINS: process.env.CORS_ORIGINS?.split(',') || [
     'https://metrotexonline.vercel.app',
     'http://localhost:3000'
   ]
 };
 
+// Ensure data directory exists
+if (!fs.existsSync(path.dirname(config.DB_PATH))) {
+  fs.mkdirSync(path.dirname(config.DB_PATH), { recursive: true });
+}
+
 // Initialize database
-const db = new sqlite3.Database(config.DB_PATH);
+const db = new sqlite3.Database(config.DB_PATH, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+  if (err) {
+    console.error('Database connection error:', err);
+    process.exit(1);
+  }
+  console.log(`Connected to SQLite database at ${config.DB_PATH}`);
+});
+
+// Database optimization and table creation
 db.serialize(() => {
+  db.run('PRAGMA journal_mode = WAL;');
+  db.run('PRAGMA synchronous = NORMAL;');
+  db.run('PRAGMA busy_timeout = 5000;');
+  
   db.run(`CREATE TABLE IF NOT EXISTS knowledge (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     question TEXT NOT NULL,
@@ -37,19 +57,21 @@ db.serialize(() => {
     horde_job_id TEXT,
     status TEXT DEFAULT 'pending',
     image_url TEXT,
+    model TEXT,
+    size TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
 
-  // Create index for faster searches
   db.run('CREATE INDEX IF NOT EXISTS idx_normalized_question ON knowledge(normalized_question)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at)');
 });
 
 // Text normalization function
 function normalizeText(text) {
   return text
     .toLowerCase()
-    .replace(/[^\w\s]/g, '')  // Remove punctuation
-    .replace(/\s+/g, ' ')     // Collapse multiple spaces
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -57,21 +79,34 @@ function normalizeText(text) {
 class StableHorde {
   static BASE_URL = 'https://stablehorde.net/api/v2';
 
-  static async generateImage(prompt) {
+  static async generateImage(prompt, size = '1024x1024') {
+    const [width, height] = size.split('x').map(Number);
+    
     const response = await axios.post(`${this.BASE_URL}/generate/async`, {
-      prompt,
-      params: { width: 512, height: 512, steps: 20 }
+      prompt: `${prompt} ### high quality, detailed, digital art`,
+      params: { 
+        width,
+        height,
+        steps: 30,
+        sampler_name: 'k_euler_a',
+        cfg_scale: 7,
+        n: 1
+      }
     }, {
       headers: {
         'Content-Type': 'application/json',
         'apikey': config.STABLE_HORDE_API_KEY
-      }
+      },
+      timeout: 30000
     });
+    
     return response.data.id;
   }
 
   static async checkStatus(jobId) {
-    const response = await axios.get(`${this.BASE_URL}/generate/status/${jobId}`);
+    const response = await axios.get(`${this.BASE_URL}/generate/status/${jobId}`, {
+      timeout: 30000
+    });
     return response.data;
   }
 }
@@ -85,11 +120,9 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ======================
 // API Endpoints
-// ======================
 
-// Chat endpoint with improved matching
+// Chat endpoint
 app.post('/chat', async (req, res) => {
   try {
     const { message } = req.body;
@@ -97,6 +130,7 @@ app.post('/chat', async (req, res) => {
 
     const normalizedMessage = normalizeText(message);
 
+    // Check local knowledge base first
     db.get(
       `SELECT answer FROM knowledge 
       WHERE normalized_question LIKE ? 
@@ -110,24 +144,39 @@ app.post('/chat', async (req, res) => {
         }
 
         if (row) {
-          return res.json({ reply: row.answer, source: "local" });
+          return res.json({ 
+            reply: row.answer, 
+            source: "local" 
+          });
         }
         
-        // Fallback to API
-        const aiResponse = await axios.post(
-          'https://openrouter.ai/api/v1/chat/completions',
-          {
-            model: "mistralai/mistral-7b-instruct",
-            messages: [{ role: "user", content: message }]
-          },
-          {
-            headers: {
-              "Authorization": `Bearer ${config.OPENROUTER_API_KEY}`,
-              "Content-Type": "application/json"
+        // Fallback to AI API
+        try {
+          const aiResponse = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+              model: "mistralai/mistral-7b-instruct",
+              messages: [{ role: "user", content: message }]
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${config.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json"
+              },
+              timeout: 15000
             }
-          }
-        );
-        res.json({ reply: aiResponse.data.choices[0].message.content, source: "AI" });
+          );
+          
+          res.json({ 
+            reply: aiResponse.data.choices[0].message.content, 
+            source: "AI" 
+          });
+        } catch (error) {
+          console.error('AI API error:', error);
+          res.status(500).json({ 
+            error: error.response?.data?.error || "AI service unavailable" 
+          });
+        }
       }
     );
   } catch (error) {
@@ -136,13 +185,15 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// Training endpoint with auto-normalization
+// Training endpoint
 app.post('/train', (req, res) => {
   let { question, answer } = req.body;
-  if (!question || !answer) return res.status(400).json({ error: "Missing Q/A" });
+  if (!question || !answer) {
+    return res.status(400).json({ error: "Question and answer required" });
+  }
 
-  // Normalize before storing
   question = question.trim();
+  answer = answer.trim();
   const normalizedQuestion = normalizeText(question);
 
   db.run(
@@ -153,58 +204,113 @@ app.post('/train', (req, res) => {
         console.error('Training error:', err);
         return res.status(500).json({ error: "Database error" });
       }
-      res.json({ success: true, id: this.lastID });
+      res.json({ 
+        success: true, 
+        id: this.lastID,
+        message: "Knowledge added successfully"
+      });
     }
   );
 });
 
-// Image generation (unchanged)
+// Image generation endpoint
 app.post('/generate-image', async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, size = '1024x1024' } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
     const imageId = uuidv4();
-    const hordeJobId = await StableHorde.generateImage(prompt);
+    const hordeJobId = await StableHorde.generateImage(prompt, size);
 
     db.run(
-      `INSERT INTO images (id, prompt, horde_job_id) VALUES (?, ?, ?)`,
-      [imageId, prompt, hordeJobId]
+      `INSERT INTO images (id, prompt, horde_job_id, size) VALUES (?, ?, ?, ?)`,
+      [imageId, prompt, hordeJobId, size]
     );
 
     res.json({
-      status: "submitted",
+      status: "processing",
       imageId,
-      checkUrl: `/image-status/${imageId}`
+      checkUrl: `/image-status/${imageId}`,
+      message: "Image generation started"
     });
   } catch (error) {
     console.error('Image generation error:', error);
-    res.status(500).json({ error: "Image generation failed" });
+    res.status(500).json({ 
+      error: error.response?.data?.error || "Image generation failed" 
+    });
   }
 });
 
-// Image status check (unchanged)
+// Image status check endpoint
 app.get('/image-status/:imageId', async (req, res) => {
-  const { imageId } = req.params;
-  db.get(`SELECT horde_job_id FROM images WHERE id = ?`, [imageId], 
-    async (err, row) => {
-      if (!row) return res.status(404).json({ error: "Image not found" });
+  try {
+    const { imageId } = req.params;
+    
+    // Get job details from database
+    const row = await new Promise((resolve, reject) => {
+      db.get(
+        `SELECT horde_job_id, prompt, size FROM images WHERE id = ?`, 
+        [imageId], 
+        (err, row) => {
+          if (err) reject(err);
+          resolve(row);
+        }
+      );
+    });
+
+    if (!row) return res.status(404).json({ error: "Image not found" });
+
+    // Check generation status
+    const status = await StableHorde.checkStatus(row.horde_job_id);
+
+    if (status.done) {
+      const imageUrl = status.generations[0].img;
       
-      const status = await StableHorde.checkStatus(row.horde_job_id);
-      if (status.done) {
-        db.run(`UPDATE images SET status='completed', image_url=? WHERE id=?`, 
-          [status.generations[0].img, imageId]);
-        return res.json({ status: "completed", imageUrl: status.generations[0].img });
-      }
-      res.json({ status: status.faulted ? 'failed' : 'processing' });
+      // Update database with result
+      db.run(
+        `UPDATE images 
+        SET status='completed', image_url=?, model=?
+        WHERE id=?`, 
+        [imageUrl, status.generations[0].model, imageId]
+      );
+
+      // Return the image data
+      res.json({
+        status: "completed",
+        image: imageUrl,
+        prompt: row.prompt,
+        model: status.generations[0].model,
+        size: row.size
+      });
+    } else if (status.faulted) {
+      db.run(
+        `UPDATE images SET status='failed' WHERE id=?`, 
+        [imageId]
+      );
+      res.json({ 
+        status: "failed",
+        error: status.error || "Image generation failed"
+      });
+    } else {
+      res.json({ 
+        status: "processing",
+        wait_time: status.wait_time,
+        queue_position: status.queue_position
+      });
     }
-  );
+  } catch (error) {
+    console.error('Status check error:', error);
+    res.status(500).json({ error: "Status check failed" });
+  }
 });
 
-// Get recent entries (updated to show original questions)
+// Recent entries endpoint
 app.get('/recent-entries', (req, res) => {
   db.all(
-    `SELECT question, answer FROM knowledge ORDER BY created_at DESC LIMIT 10`,
+    `SELECT question, answer, created_at 
+    FROM knowledge 
+    ORDER BY created_at DESC 
+    LIMIT 10`,
     (err, rows) => {
       if (err) {
         console.error('Recent entries error:', err);
@@ -215,27 +321,107 @@ app.get('/recent-entries', (req, res) => {
   );
 });
 
-// Training interface route (NO AUTH)
+// Recent images endpoint
+app.get('/recent-images', (req, res) => {
+  db.all(
+    `SELECT id, prompt, image_url, model, size, created_at 
+    FROM images 
+    WHERE status = 'completed'
+    ORDER BY created_at DESC 
+    LIMIT 10`,
+    (err, rows) => {
+      if (err) {
+        console.error('Recent images error:', err);
+        return res.status(500).json({ error: "Database error" });
+      }
+      res.json(rows);
+    }
+  );
+});
+
+// Training interface route
 app.get('/trainer', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'trainer.html'));
 });
 
-// Health check
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date(),
-    db: config.DB_PATH,
-    origins: config.CORS_ORIGINS 
+    database: config.DB_PATH,
+    origins: config.CORS_ORIGINS,
+    services: {
+      openrouter: config.OPENROUTER_API_KEY ? 'configured' : 'not_configured',
+      stablehorde: config.STABLE_HORDE_API_KEY ? 'configured' : 'not_configured'
+    }
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: err.message
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    available_endpoints: [
+      'POST /chat',
+      'POST /train',
+      'POST /generate-image',
+      'GET /image-status/:imageId',
+      'GET /recent-entries',
+      'GET /recent-images',
+      'GET /health'
+    ]
   });
 });
 
 // Start server
-app.listen(config.PORT, () => {
+const server = app.listen(config.PORT, () => {
   console.log(`Server running on port ${config.PORT}`);
-  console.log(`Training interface: http://localhost:${config.PORT}/trainer`);
-  console.log(`API Documentation:`);
-  console.log(`- POST /chat - For chatting with your AI`);
-  console.log(`- POST /train - To add new knowledge`);
-  console.log(`- POST /generate-image - For image generation`);
+  console.log(`Database path: ${config.DB_PATH}`);
+  console.log(`Allowed origins: ${config.CORS_ORIGINS.join(', ')}`);
 });
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Closing server...');
+  db.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received. Closing server...');
+  db.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+// Database backup function (run periodically)
+function backupDatabase() {
+  if (process.env.NODE_ENV !== 'production') return;
+  
+  const backupDir = path.join(__dirname, 'backups');
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir);
+  }
+
+  const backupPath = path.join(backupDir, `knowledge-${Date.now()}.db`);
+  fs.copyFileSync(config.DB_PATH, backupPath);
+  console.log(`Database backup created at ${backupPath}`);
+}
+
+// Schedule backups (every 24 hours)
+setInterval(backupDatabase, 24 * 60 * 60 * 1000);
