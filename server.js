@@ -1,123 +1,152 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
+const cors = require('cors');
 
 const app = express();
 
-// Configuration
-const config = {
-  PORT: process.env.PORT || 3000,
-  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-  STABLE_HORDE_API_KEY: process.env.STABLE_HORDE_API_KEY || '0000000000',
-  CORS_ORIGINS: process.env.CORS_ORIGINS?.split(',') || [
-    'https://metrotexonline.vercel.app',
-    'http://localhost:3000'
-  ]
-};
-
+// ======================
 // Middleware
+// ======================
 app.use(cors({
-  origin: config.CORS_ORIGINS,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: 'https://metrotexonline.vercel.app',
+  methods: ['POST'],
+  allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
-// Stable Horde Service
-class StableHorde {
-  static BASE_URL = 'https://stablehorde.net/api/v2';
-
-  static async generateImage(prompt, size = '1024x1024') {
-    const [width, height] = size.split('x').map(Number);
-    const response = await axios.post(`${this.BASE_URL}/generate/async`, {
-      prompt: `${prompt} ### high quality, detailed, digital art`,
-      params: { 
-        width,
-        height,
-        steps: 30,
-        sampler_name: 'k_euler_a',
-        cfg_scale: 7,
-        n: 1
-      }
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': config.STABLE_HORDE_API_KEY
-      },
-      timeout: 30000
-    });
-    return response.data.id;
-  }
-
-  static async checkStatus(jobId) {
-    const response = await axios.get(`${this.BASE_URL}/generate/status/${jobId}`, {
-      timeout: 30000
-    });
-    return response.data;
-  }
-}
-
-// Chat endpoint
+// ======================
+// 1. OpenRouter Chat
+// ======================
 app.post('/chat', async (req, res) => {
   try {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message required" });
+    if (!req.body?.message?.trim()) {
+      return res.status(400).json({ error: "Message cannot be empty" });
+    }
 
-    const aiResponse = await axios.post(
+    const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
         model: "mistralai/mistral-7b-instruct",
-        messages: [{ role: "user", content: message }]
+        messages: [{ role: "user", content: req.body.message.trim() }],
+        temperature: 0.7
       },
       {
         headers: {
-          "Authorization": `Bearer ${config.OPENROUTER_API_KEY}`,
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": "https://metrotexonline.vercel.app",
+          "X-Title": "MetroTex AI",
           "Content-Type": "application/json"
         },
-        timeout: 15000
+        timeout: 25000
       }
     );
-    
-    res.json({ 
-      reply: aiResponse.data.choices[0].message.content,
-      source: "AI"
-    });
+
+    const aiResponse = response.data.choices[0]?.message?.content;
+    if (!aiResponse) throw new Error("Empty AI response");
+
+    res.json({ reply: aiResponse });
+
   } catch (error) {
-    console.error('Chat error:', error);
-    res.status(500).json({ 
-      error: error.response?.data?.error || "Chat processing failed" 
+    console.error('Chat Error:', error.message);
+    res.status(500).json({
+      error: "AI service error",
+      details: error.response?.data?.error?.message || error.message
     });
   }
 });
 
-// Image generation endpoint
+// ======================
+// 2. Stable Horde Image Generation
+// ======================
 app.post('/generate-image', async (req, res) => {
   try {
-    const { prompt, size = '1024x1024' } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Prompt required" });
+    const { prompt, width = 512, height = 512, steps = 25 } = req.body;
 
-    const hordeJobId = await StableHorde.generateImage(prompt, size);
+    if (!prompt?.trim()) {
+      return res.status(400).json({ error: "Prompt is required" });
+    }
+
+    // Submit generation job
+    const submitResponse = await axios.post(
+      'https://stablehorde.net/api/v2/generate/async',
+      {
+        prompt: `${prompt.trim()} | highly detailed, vibrant colors`,
+        params: {
+          width,
+          height,
+          steps,
+          sampler_name: "k_euler_a",
+          cfg_scale: 7.5,
+          clip_skip: 1
+        },
+        models: ["stable_diffusion"],
+        nsfw: false
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": process.env.STABLE_HORDE_API_KEY || "0000000000" // Anonymous if no key
+        },
+        timeout: 30000
+      }
+    );
+
+    const jobId = submitResponse.data.id;
+    console.log(`Generation started. Job ID: ${jobId}`);
+
+    // Check completion status
+    let imageResult;
+    for (let i = 0; i < 40; i++) { // Max 40 attempts (~40 seconds)
+      try {
+        const statusResponse = await axios.get(
+          `https://stablehorde.net/api/v2/generate/check/${jobId}`,
+          { timeout: 5000 }
+        );
+
+        if (statusResponse.data.done) {
+          const resultResponse = await axios.get(
+            `https://stablehorde.net/api/v2/generate/status/${jobId}`,
+            { timeout: 10000 }
+          );
+          imageResult = resultResponse.data.generations[0];
+          break;
+        }
+      } catch (e) {
+        console.warn(`Status check attempt ${i + 1} failed:`, e.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+    }
+
+    if (!imageResult) throw new Error("Generation timeout after 40 seconds");
 
     res.json({
-      status: "processing",
-      jobId: hordeJobId,
-      checkUrl: `https://stablehorde.net/api/v2/generate/status/${hordeJobId}`
+      image: imageResult.img,
+      seed: imageResult.seed,
+      details: {
+        model: imageResult.model,
+        prompt: prompt.trim(),
+        steps,
+        dimensions: `${width}x${height}`
+      }
     });
+
   } catch (error) {
-    console.error('Image generation error:', error);
-    res.status(500).json({ 
-      error: error.response?.data?.error || "Image generation failed" 
+    console.error('Generation Error:', error.message);
+    res.status(500).json({
+      error: "Image generation failed",
+      details: error.response?.data?.message || error.message
     });
   }
 });
 
-// Start server
-const server = app.listen(config.PORT, () => {
-  console.log(`Server running on port ${config.PORT}`);
-});
-
-process.on('SIGTERM', () => {
-  server.close();
+// ======================
+// Server Start
+// ======================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📝 Endpoints:
+  - POST /chat (OpenRouter)
+  - POST /generate-image (Stable Horde)`);
 });
