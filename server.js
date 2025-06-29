@@ -71,7 +71,7 @@ app.post('/generate-image', async (req, res) => {
     const submitResponse = await axios.post(
       'https://stablehorde.net/api/v2/generate/async',
       {
-        prompt: `${prompt.trim()} | highly detailed, vibrant colors`,
+        prompt: `${prompt.trim()} | photorealistic, ultra-detailed, 8k, cinematic lighting, highly realistic, shadows, HDR`,
         params: {
           width,
           height,
@@ -80,7 +80,7 @@ app.post('/generate-image', async (req, res) => {
           cfg_scale: 7.5,
           clip_skip: 1
         },
-        models: ["stable_diffusion"],
+        models: ["Realistic_Vision_V5.1", "Deliberate", "Dreamshaper_8"],
         nsfw: false
       },
       {
