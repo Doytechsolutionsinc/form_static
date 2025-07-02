@@ -12,11 +12,12 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "sqlite3": "^5.0.11",
-    "path": "^0.12.7",
-    "uuid": "^9.0.0",
-    "express": "^4.18.2",
-    "express-basic-auth": "^1.2.0"
+    "firebase-admin": "^12.0.0"  // <-- THIS IS THE MISSING LINE!
+                                // Use the latest stable version if you prefer, e.g., "^13.0.0"
+    // "sqlite3": "^5.0.11",      // <--- If you're not using SQLite in your current server.js, you can remove this.
+    // "path": "^0.12.7",         // <--- If not directly using Node's 'path' module, can remove.
+    // "uuid": "^9.0.0",          // <--- If not generating UUIDs directly, can remove.
+    // "express-basic-auth": "^1.2.0" // <--- If not using basic auth middleware, can remove.
   },
   "engines": {
     "node": ">=18.x"
