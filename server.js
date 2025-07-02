@@ -2,28 +2,34 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-require('dotenv').config(); // Load environment variables from .env file
+require('dotenv').config(); // Load environment variables from .env file (for local development)
 
 // Firebase Admin SDK Imports and Initialization
 const admin = require('firebase-admin');
 
 // --- IMPORTANT: Service Account Key Handling ---
+// This block determines how the Firebase Service Account Key is loaded.
+// For Render/Production: It expects the key as a JSON string in an environment variable.
+// For Local Development: It can optionally load from a local JSON file (serviceAccountKey.json).
 let serviceAccount;
 try {
-    // For Vercel/Production: It's expected to be a JSON string in an environment variable
+    // Check if the environment variable is set (this is for Render/production)
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        // Parse the JSON string from the environment variable
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
     } else {
-        // For Local Development: You might load it from a file
-        // Make sure 'serviceAccountKey.json' is in the root of your backend project
-        // and is NOT committed to Git (.gitignore it!)
+        // Fallback for local development: try to load from a local file
+        // Ensure 'serviceAccountKey.json' is in your backend project's root
+        // and is listed in your .gitignore file to prevent accidental commits!
+        console.warn('FIREBASE_SERVICE_ACCOUNT_KEY environment variable not found. Attempting to load from ./serviceAccountKey.json');
         serviceAccount = require('./serviceAccountKey.json');
     }
 } catch (error) {
-    console.error('Failed to parse Firebase Service Account Key:', error);
-    console.error('Ensure FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set correctly as a JSON string,');
-    console.error('or that serviceAccountKey.json exists locally.');
-    process.exit(1); // Exit if essential config is missing
+    console.error('Failed to load or parse Firebase Service Account Key:', error);
+    console.error('Please ensure:');
+    console.error('1. For Render/Production: The FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set correctly as a single-line JSON string.');
+    console.error('2. For Local Development: A valid serviceAccountKey.json file exists in your backend root, or the environment variable is set locally.');
+    process.exit(1); // Exit the process if the key cannot be loaded, as Firebase Admin SDK needs it.
 }
 
 
@@ -66,7 +72,7 @@ async function authenticateToken(req, res, next) {
 
 // --- API ENDPOINTS ---
 
-// Existing Health Check or Root Endpoint
+// Basic Health Check or Root Endpoint
 app.get('/', (req, res) => {
     res.status(200).send('MetroTex Backend is running!');
 });
@@ -95,12 +101,12 @@ app.post('/chat', authenticateToken, async (req, res) => {
                 title: message.substring(0, 50) + (message.length > 50 ? '...' : ''), // First 50 chars as title
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                // You can add other initial metadata here if needed
+                // You can add other initial metadata here like 'tags', 'summary' etc.
             });
         } else {
             // If conversationId is provided, get its reference and update last updated time
             currentConversationRef = db.collection('users').doc(userId).collection('conversations').doc(currentConversationId);
-            // Verify conversation exists and belongs to user (optional, but good for robustness)
+            // Optional: Verify conversation exists and belongs to user (good for robustness)
             const conversationDoc = await currentConversationRef.get();
             if (!conversationDoc.exists) {
                 console.warn(`Conversation ${currentConversationId} not found for user ${userId}. Creating new one.`);
@@ -129,6 +135,7 @@ app.post('/chat', authenticateToken, async (req, res) => {
         });
 
         // --- Call External AI Model (Perplexity AI) ---
+        // Ensure process.env.PERPLEXITY_API_KEY is set in Render environment variables
         const aiResponse = await axios.post(
             'https://api.perplexity.ai/chat/completions',
             {
@@ -171,6 +178,9 @@ app.get('/conversations', authenticateToken, async (req, res) => {
 
         const conversations = snapshot.docs.map(doc => ({
             id: doc.id,
+            // Convert Firestore Timestamp objects to a more usable format if needed
+            // For example, to Unix milliseconds or ISO string, but frontend can also handle it.
+            // For now, sending raw Firestore Timestamp objects, frontend will format.
             ...doc.data()
         }));
 
@@ -201,6 +211,7 @@ app.get('/conversations/:conversationId/messages', authenticateToken, async (req
 
         const messages = snapshot.docs.map(doc => ({
             id: doc.id,
+            // Firestore Timestamp objects are sent as-is, frontend will format
             ...doc.data()
         }));
 
@@ -261,7 +272,7 @@ app.post('/generate-image', authenticateToken, async (req, res) => {
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
+                    'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`, // Ensure this env var is set
                     'Accept': 'application/json'
                 },
                 responseType: 'arraybuffer', // Get response as buffer for image
@@ -286,5 +297,11 @@ app.post('/generate-image', authenticateToken, async (req, res) => {
 // Define the port the server will listen on
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📝 Endpoints:
+  - POST /chat (with memory)
+  - GET /conversations
+  - GET /conversations/:conversationId/messages
+  - DELETE /conversations/:conversationId
+  - POST /generate-image`);
 });
