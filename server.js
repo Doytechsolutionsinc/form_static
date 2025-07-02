@@ -78,7 +78,7 @@ app.get('/', (req, res) => {
 });
 
 
-// 1. Chat Endpoint (MODIFIED to handle conversation history)
+// 1. Chat Endpoint (MODIFIED to handle conversation history and OpenRouter)
 app.post('/chat', authenticateToken, async (req, res) => {
     const { message, conversationId } = req.body; // Expect message and optionally conversationId
     const userId = req.userId; // Obtained from authenticateToken middleware
@@ -134,17 +134,17 @@ app.post('/chat', authenticateToken, async (req, res) => {
             timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // --- Call External AI Model (Perplexity AI) ---
-        // Ensure process.env.PERPLEXITY_API_KEY is set in Render environment variables
+        // --- Call External AI Model (OpenRouter) ---
+        // Ensure process.env.OPENROUTER_API_KEY is set in Render environment variables
         const aiResponse = await axios.post(
-            'https://api.perplexity.ai/chat/completions',
+            'https://openrouter.ai/api/v1/chat/completions', // OpenRouter API Endpoint
             {
-                model: "llama-3-sonar-small-32k-online", // Or your desired model
+                model: "google/gemini-pro-1.5", // Recommended OpenRouter model, or choose another like "mistralai/mistral-7b-instruct"
                 messages: [{ role: "user", content: message }],
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // OpenRouter API Key
                     'Content-Type': 'application/json'
                 },
                 timeout: 15000 // 15 seconds timeout
@@ -163,7 +163,7 @@ app.post('/chat', authenticateToken, async (req, res) => {
         res.json({ reply, conversationId: currentConversationId }); // Return conversationId to frontend
 
     } catch (error) {
-        console.error('Chat Error:', error.response?.data || error.message);
+        console.error('Chat Error (OpenRouter):', error.response?.data || error.message);
         res.status(500).json({ error: error.response?.data?.error || "AI response failed." });
     }
 });
@@ -299,7 +299,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📝 Endpoints:
-  - POST /chat (with memory)
+  - POST /chat (with memory, using OpenRouter)
   - GET /conversations
   - GET /conversations/:conversationId/messages
   - DELETE /conversations/:conversationId
