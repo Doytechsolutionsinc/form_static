@@ -96,7 +96,7 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
-// --- AI Chat Endpoint ---
+// --- AI Chat Endpoint (MODIFIED FOR OPENROUTER & MISTRAL) ---
 app.post('/chat', verifyIdToken, async (req, res) => {
     const { message, context } = req.body;
 
@@ -104,53 +104,74 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         return res.status(400).json({ error: 'Message is required.' });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-        console.error('GEMINI_API_KEY is not set in environment variables.');
-        return res.status(500).json({ error: 'Server configuration error: AI service key missing.' });
+    // Now correctly named for OpenRouter
+    if (!process.env.OPENROUTER_API_KEY) {
+        console.error('OPENROUTER_API_KEY is not set in environment variables.');
+        return res.status(500).json({ error: 'Server configuration error: OpenRouter API key missing.' });
     }
 
     try {
-        // Construct messages array for Gemini, including history
-        const messagesForGemini = context.map(msg => ({
-            role: msg.role,
-            parts: [{ text: msg.content }]
+        const messagesForOpenRouter = context.map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'assistant', // Map your 'bot' sender to 'assistant' role
+            content: msg.content
         }));
 
-        const geminiResponse = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        // Add the current user message to the conversation
+        messagesForOpenRouter.push({ role: 'user', content: message });
+
+        // Use mistralai/mistral-7b-instruct-v0.2 as the default model
+        // You can override this via an environment variable if you want to switch models easily.
+        const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
+
+        console.log(`Sending chat request to OpenRouter model: ${openRouterModel}`);
+        console.log("Messages being sent:", JSON.stringify(messagesForOpenRouter));
+
+        const openRouterResponse = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions', // OpenRouter Chat Completions endpoint
             {
-                contents: messagesForGemini
+                model: openRouterModel,
+                messages: messagesForOpenRouter,
+                // Optional: You might want to pass 'temperature', 'max_tokens', etc.
+                // temperature: 0.7,
+                // max_tokens: 500,
             },
             {
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // Use your OpenRouter Key here
+                    'HTTP-Referer': 'https://metrotexonline.vercel.app', // IMPORTANT: Your deployed frontend URL
+                    'X-Title': 'MetroTex AI' // Optional: A user-friendly title for your app on OpenRouter
                 },
-                timeout: 15000 // Increased timeout for AI response
+                timeout: 30000 // Increased timeout for OpenRouter API
             }
         );
 
-        const reply = geminiResponse.data.candidates[0]?.content?.parts[0]?.text;
+        const reply = openRouterResponse.data.choices[0]?.message?.content;
 
         if (reply) {
             res.json({ reply: reply });
         } else {
-            console.warn('Gemini API did not return a valid reply:', geminiResponse.data);
-            res.status(500).json({ error: "Sorry, I couldn't generate a response. Please try again." });
+            console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
+            res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
         }
 
     } catch (error) {
-        console.error('Error calling Gemini API:', error.response?.data || error.message);
-        let errorMessage = 'Failed to get response from AI. Please try again.';
-        if (error.response && error.response.data && error.response.data.error) {
-            errorMessage = `AI Error: ${error.response.data.error.message || 'Unknown AI error'}`;
+        console.error('Error calling OpenRouter API:', error.response?.data || error.message);
+        let errorMessage = 'Failed to get response from AI (OpenRouter). Please try again.';
+        if (error.response && error.response.data) {
+            if (error.response.data.error && error.response.data.error.message) {
+                errorMessage = `AI Error (OpenRouter): ${error.response.data.error.message}`;
+            } else if (error.response.data.message) {
+                errorMessage = `AI Error (OpenRouter): ${error.response.data.message}`;
+            }
         } else if (error.code === 'ECONNABORTED') {
-            errorMessage = 'AI response timed out. Please try again or simplify your message.';
+            errorMessage = 'AI response timed out (OpenRouter). Please try again or simplify your message.';
         }
         res.status(500).json({ error: errorMessage });
     }
 });
 
-// --- Image Generation Endpoint (using Stable Horde) ---
+// --- Image Generation Endpoint (using Stable Horde - NO CHANGES HERE) ---
 app.post('/generate-image', verifyIdToken, async (req, res) => {
     const { prompt, imageSize } = req.body;
 
@@ -167,7 +188,6 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         console.log(`Attempting to generate image for prompt: "${prompt}"`);
 
         // Define your preferred models with fallbacks
-        // The order matters: Stable Horde will try to use the first available model from this list.
         const preferredModels = [
             "AI Scribbles",       // Your primary choice for the "scribble" style
             "SDXL",               // High quality, versatile base model
