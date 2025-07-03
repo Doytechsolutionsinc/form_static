@@ -184,7 +184,8 @@ app.post('/generate-image', verifyToken, async (req, res) => {
             params: {
                 sampler_name: samplers,
                 cfg_scale: 7, // Classifier-free guidance scale: how much the image follows the prompt
-                seed: Math.floor(Math.random() * 1000000000), // Random seed for unique variations
+                // CORRECTED LINE: Convert the random number to a string for the 'seed' parameter
+                seed: String(Math.floor(Math.random() * 1000000000)), // Convert to string as per error
                 steps: steps, // Number of diffusion steps
                 width: width,
                 height: height,
