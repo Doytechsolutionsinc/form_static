@@ -1,4 +1,4 @@
-// server.js - MetroTex AI Backend (WITH FIREBASE AUTH)
+// server.js - MetroTex AI Backend (WITH FIREBASE AUTH - ONLY STABLE_DIFFUSION MODEL)
 
 require('dotenv').config(); // Load environment variables from .env file
 
@@ -191,63 +191,135 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     }
 
     try {
-        console.log(`Attempting to generate image for prompt: "${prompt}"`);
+        console.log(`Attempting to initiate image generation for prompt: "${prompt}"`);
 
-        // Changed to use only "SDXL" as the preferred model
-        const preferredModels = [
-            "SDXL"
-        ];
-
+        // Default to 512x512 for stable_diffusion
         let width = 512;
         let height = 512;
+        // Adjust if larger sizes are explicitly requested, though stable_diffusion works best at 512x512
         if (imageSize === '768x768') {
             width = 768;
             height = 768;
-        } else if (imageSize === '1024x1024') {
+        } else if (imageSize === '1024x1024') { // SD 1.5 models don't handle 1024x1024 well natively
+            console.warn('Attempting 1024x1024 with stable_diffusion. This may lead to poor results or slower generation.');
             width = 1024;
             height = 1024;
         }
 
-        const hordeResponse = await axios.post('https://stablehorde.net/api/v2/generate/async', {
-            prompt: prompt,
-            params: {
-                width: width,
-                height: height,
-                cfg_scale: 7,
-                steps: 20,
-            },
-            models: preferredModels,
-            nsfw: false,
-            censor_nsfw: true,
-            shared: true,
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'apikey': process.env.STABLE_HORDE_API_KEY,
-                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
-            },
-            timeout: 70000,
-        });
+        // Only use the 'stable_diffusion' model
+        const modelGroups = [
+            ["stable_diffusion"]
+        ];
 
-        if (hordeResponse.data && hordeResponse.data.generations && hordeResponse.data.generations.length > 0) {
-            const imageUrl = hordeResponse.data.generations[0].img;
+        let jobId = null;
+        let finalModelUsed = "N/A";
+        let generationWarning = null;
+
+        // Loop through model groups (though only one in this case)
+        for (const modelsToTry of modelGroups) {
+            console.log(`Attempting generation with models: [${modelsToTry.join(', ')}]`);
+            try {
+                const initiateResponse = await axios.post('https://stablehorde.net/api/v2/generate/async', {
+                    prompt: prompt,
+                    params: {
+                        width: width,
+                        height: height,
+                        cfg_scale: 7,
+                        steps: 20,
+                    },
+                    models: modelsToTry, // Use the current group of models
+                    nsfw: false,
+                    censor_nsfw: true,
+                    shared: true,
+                }, {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'apikey': process.env.STABLE_HORDE_API_KEY,
+                        'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
+                    },
+                    timeout: 15000, // Timeout for initiation
+                });
+
+                jobId = initiateResponse.data.id;
+                finalModelUsed = initiateResponse.data.model || modelsToTry[0];
+                generationWarning = (initiateResponse.data.warnings && initiateResponse.data.warnings.some(w => w.code === 'NoAvailableWorker')) ?
+                                    (initiateResponse.data.message || 'No available workers for these models/size.') : null;
+
+                if (generationWarning) {
+                    console.warn(`Stable Horde initiation warning for models [${modelsToTry.join(', ')}]: ${generationWarning}`);
+                    jobId = null; // Reset jobId to ensure loop continues (though not strictly necessary with one group)
+                    continue; // Try the next model group (will exit loop if only one)
+                }
+
+                if (jobId) {
+                    console.log(`Stable Horde generation initiated with model(s) [${finalModelUsed}]. Job ID: ${jobId}`);
+                    break; // Successfully initiated, exit model loop
+                }
+
+            } catch (initiateError) {
+                console.error(`Error initiating with models [${modelsToTry.join(', ')}]:`, initiateError.response?.data || initiateError.message);
+                if (initiateError.response?.status === 400) {
+                     return res.status(400).json({ error: `Stable Horde Bad Request: ${initiateError.response.data.message || 'Check prompt or parameters.'}` });
+                }
+                // For other errors, continue to next model group (if any)
+            }
+        }
+
+        if (!jobId) {
+            console.error('Failed to initiate image generation. No suitable workers found for the stable_diffusion model.');
+            return res.status(503).json({ error: generationWarning || 'Failed to initiate image generation. No suitable workers found for "stable_diffusion" model. Try a simpler prompt or a smaller size.' });
+        }
+
+        // --- STEP 2: Poll for the result ---
+        let imageUrl = null;
+        let attempts = 0;
+        const maxAttempts = 60; // Up to 2 minutes
+        const pollInterval = 2000; // 2 seconds
+
+        while (!imageUrl && attempts < maxAttempts) {
+            attempts++;
+            console.log(`Polling Stable Horde for job ${jobId} (Attempt ${attempts}/${maxAttempts})...`);
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+            const statusResponse = await axios.get(`https://stablehorde.net/api/v2/generate/status/${jobId}`, {
+                headers: {
+                    'apikey': process.env.STABLE_HORDE_API_KEY,
+                    'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
+                },
+                timeout: 10000,
+            });
+
+            if (statusResponse.data && statusResponse.data.generations && statusResponse.data.generations.length > 0) {
+                imageUrl = statusResponse.data.generations[0].img;
+                finalModelUsed = statusResponse.data.generations[0].model || finalModelUsed;
+                console.log(`Image URL found after ${attempts} attempts with model ${finalModelUsed}:`, imageUrl);
+            } else if (statusResponse.data && statusResponse.data.faulted) {
+                console.error(`Stable Horde job ${jobId} faulted:`, statusResponse.data.fault_message);
+                return res.status(500).json({ error: `Image generation failed on Stable Horde: ${statusResponse.data.fault_message}` });
+            } else {
+                console.log(`Stable Horde job ${jobId} status: Still waiting. K/s: ${statusResponse.data.kudos_per_second}, Queue: ${statusResponse.data.queue_position}, Wait Time: ${statusResponse.data.wait_time}, Worker Count: ${statusResponse.data.worker_count}`);
+            }
+        }
+
+        if (imageUrl) {
             console.log("Image URL successfully generated:", imageUrl);
-            res.json({ imageUrl: imageUrl });
+            res.json({ imageUrl: imageUrl, model: finalModelUsed });
         } else {
-            console.error('Stable Horde response did not contain valid image data:', hordeResponse.data);
-            res.status(500).json({ error: 'Failed to generate image: No valid image data returned from service.' });
+            console.error(`Stable Horde did not return an image after ${maxAttempts} attempts for job ${jobId}.`);
+            res.status(504).json({ error: 'Image generation timed out on Stable Horde. This can happen with complex prompts, high resolutions, or low worker availability. Please try again or simplify your request.' });
         }
 
     } catch (error) {
-        console.error('Error in /generate-image endpoint:', error.response?.data || error.message);
-        console.log('--- DEBUG: Error caught in image generation try/catch. ---');
+        console.error('Error in /generate-image endpoint (overall):', error.response?.data || error.message);
         let errorMessage = 'Failed to generate image. Please try again later.';
         if (error.response && error.response.data && error.response.data.message) {
-                errorMessage = `Image generation failed: ${error.response.data.message}`;
+            errorMessage = `Image generation failed: ${error.response.data.message}`;
         } else if (error.code === 'ECONNABORTED') {
-            errorMessage = 'Image generation request timed out. This can happen with complex prompts or high traffic. Please try again.';
-        } else if (error.response && error.response.status === 404) { // Specifically catch 404 from Stable Horde
-            errorMessage = 'Image generation service not found. This might be a temporary issue with the image API, or a misconfiguration.';
+            errorMessage = 'Image generation request timed out (Backend to Stable Horde). Please try again or simplify your message.';
+        } else if (error.response && error.response.status === 404) {
+            errorMessage = 'Stable Horde API endpoint not found. This might be a misconfiguration or a change in their API.';
+        } else if (error.response && error.response.status === 401) {
+            errorMessage = `Stable Horde API key unauthorized. Please check your API key or kudos.`;
         }
         res.status(500).json({ error: errorMessage });
     }
