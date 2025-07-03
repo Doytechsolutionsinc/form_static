@@ -139,7 +139,7 @@ app.post('/chat', authenticateToken, async (req, res) => {
         const aiResponse = await axios.post(
             'https://openrouter.ai/api/v1/chat/completions', // OpenRouter API Endpoint
             {
-                model: "google/gemini-pro-1.5", // Recommended OpenRouter model, or choose another like "mistralai/mistral-7b-instruct"
+                model: "mistralai/mistral-7b-instruct", // Recommended OpenRouter model, or choose another like "mistralai/mistral-7b-instruct"
                 messages: [{ role: "user", content: message }],
             },
             {
