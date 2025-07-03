@@ -1,16 +1,16 @@
-// server.js - MetroTex AI Backend
+// server.js - MetroTex AI Backend (WITH FIREBASE AUTH)
 
 require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const admin = require('firebase-admin');
+const admin = require('firebase-admin'); // Firebase Admin SDK is back!
 
 const app = express();
 const PORT = process.env.PORT || 5000; // Use port from environment variable or default to 5000
 
-// --- Firebase Admin SDK Initialization ---
+// --- Firebase Admin SDK Initialization (BACK IN!) ---
 try {
     // Check if the service account path is provided as an environment variable
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -44,7 +44,7 @@ try {
     process.exit(1); // Exit if Firebase initialization fails
 }
 
-// --- Middleware to Verify Firebase ID Token ---
+// --- Middleware to Verify Firebase ID Token (BACK IN!) ---
 const verifyIdToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -67,7 +67,7 @@ const verifyIdToken = async (req, res, next) => {
     }
 };
 
-// --- CORS Configuration ---
+// --- CORS Configuration (NO CHANGE) ---
 const allowedOrigins = [
     'http://localhost:3000', // For local development of your React app
     'https://metrotexonline.vercel.app', // <--- YOUR DEPLOYED FRONTEND URL
@@ -75,74 +75,74 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         if (allowedOrigins.indexOf(origin) === -1) {
             const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}.`;
-            console.error(msg); // Log the problematic origin for debugging
+            console.error(msg);
             return callback(new Error(msg), false);
         }
         return callback(null, true);
     },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true, // Allow cookies to be sent
-    optionsSuccessStatus: 204 // For preflight requests
+    credentials: true,
+    optionsSuccessStatus: 204
 }));
 
 app.use(express.json()); // Body parser for JSON requests
 
-// --- Basic Route ---
+// --- Basic Route (NO CHANGE) ---
 app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
-// --- AI Chat Endpoint (MODIFIED FOR OPENROUTER & MISTRAL) ---
-app.post('/chat', verifyIdToken, async (req, res) => {
+// --- AI Chat Endpoint (verifyIdToken IS BACK!) ---
+app.post('/chat', verifyIdToken, async (req, res) => { // <<< verifyIdToken IS BACK
     const { message, context } = req.body;
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
     }
 
-    // Now correctly named for OpenRouter
     if (!process.env.OPENROUTER_API_KEY) {
         console.error('OPENROUTER_API_KEY is not set in environment variables.');
         return res.status(500).json({ error: 'Server configuration error: OpenRouter API key missing.' });
     }
 
     try {
-        const messagesForOpenRouter = context.map(msg => ({
-            role: msg.role === 'user' ? 'user' : 'assistant', // Map your 'bot' sender to 'assistant' role
-            content: msg.content
-        }));
+        const systemPersona = {
+            role: 'system',
+            content: 'You are MetroTex, an AI assistant developed by Doy Tech Solutions Inc. Always introduce yourself as MetroTex, and mention Doy Tech Solutions Inc. when appropriate or asked about your origin. Keep responses concise unless detailed information is explicitly requested. Be helpful and professional.'
+        };
 
-        // Add the current user message to the conversation
+        const messagesForOpenRouter = [systemPersona];
+        context.forEach(msg => {
+            messagesForOpenRouter.push({
+                role: msg.role === 'user' ? 'user' : 'assistant',
+                content: msg.content
+            });
+        });
         messagesForOpenRouter.push({ role: 'user', content: message });
 
-        // Use mistralai/mistral-7b-instruct-v0.2 as the default model
-        // You can override this via an environment variable if you want to switch models easily.
         const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
 
         console.log(`Sending chat request to OpenRouter model: ${openRouterModel}`);
         console.log("Messages being sent:", JSON.stringify(messagesForOpenRouter));
 
         const openRouterResponse = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions', // OpenRouter Chat Completions endpoint
+            'https://openrouter.ai/api/v1/chat/completions',
             {
                 model: openRouterModel,
                 messages: messagesForOpenRouter,
-                // Optional: You might want to pass 'temperature', 'max_tokens', etc.
-                // temperature: 0.7,
-                // max_tokens: 500,
+                temperature: 0.7,
             },
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // Use your OpenRouter Key here
-                    'HTTP-Referer': 'https://metrotexonline.vercel.app', // IMPORTANT: Your deployed frontend URL
-                    'X-Title': 'MetroTex AI' // Optional: A user-friendly title for your app on OpenRouter
+                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                    'HTTP-Referer': 'https://metrotexonline.vercel.app',
+                    'X-Title': 'MetroTex AI'
                 },
-                timeout: 30000 // Increased timeout for OpenRouter API
+                timeout: 30000
             }
         );
 
@@ -171,32 +171,35 @@ app.post('/chat', verifyIdToken, async (req, res) => {
     }
 });
 
-// --- Image Generation Endpoint (using Stable Horde - NO CHANGES HERE) ---
-app.post('/generate-image', verifyIdToken, async (req, res) => {
+// --- Image Generation Endpoint (verifyIdToken IS BACK! WITH DEBUG LOGS) ---
+app.post('/generate-image', verifyIdToken, async (req, res) => { // <<< verifyIdToken IS BACK
+    console.log('--- DEBUG: Image generation endpoint hit! ---'); // DEBUG LOG
+    console.log('--- DEBUG: Request body:', req.body); // DEBUG LOG
+
     const { prompt, imageSize } = req.body;
 
     if (!prompt) {
+        console.log('--- DEBUG: Prompt missing. ---'); // DEBUG LOG
         return res.status(400).json({ error: 'Image prompt is required.' });
     }
 
     if (!process.env.STABLE_HORDE_API_KEY) {
         console.error('STABLE_HORDE_API_KEY is not set in environment variables.');
+        console.log('--- DEBUG: STABLE_HORDE_API_KEY missing. ---'); // DEBUG LOG
         return res.status(500).json({ error: 'Server configuration error: Image generation key missing.' });
     }
 
     try {
         console.log(`Attempting to generate image for prompt: "${prompt}"`);
 
-        // Define your preferred models with fallbacks
         const preferredModels = [
-            "AI Scribbles",       // Your primary choice for the "scribble" style
-            "SDXL",               // High quality, versatile base model
-            "Dreamshaper",        // Very popular for artistic and good general results
-            "Deliberate",         // Another popular model, often good for realism and detail
-            "stable_diffusion"    // The original Stable Diffusion 1.5, a solid fallback
+            "AI Scribbles",
+            "SDXL",
+            "Dreamshaper",
+            "Deliberate",
+            "stable_diffusion"
         ];
 
-        // Prepare image dimensions based on imageSize from frontend
         let width = 512;
         let height = 512;
         if (imageSize === '768x768') {
@@ -210,22 +213,22 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         const hordeResponse = await axios.post('https://stablehorde.net/api/v2/generate/sync', {
             prompt: prompt,
             params: {
-                width: width,   // Use dynamically set width
-                height: height, // Use dynamically set height
-                cfg_scale: 7,   // How strongly the image should conform to the prompt (7 is a good default)
-                steps: 20,      // Number of steps to generate the image (20-30 is common)
+                width: width,
+                height: height,
+                cfg_scale: 7,
+                steps: 20,
             },
-            models: preferredModels, // Use the defined array of models
-            nsfw: false, // Set to true if you want to allow NSFW content. Be cautious for public apps.
-            censor_nsfw: true, // IMPORTANT: Ensure NSFW images are censored for public consumption if nsfw: true
-            shared: true, // Helps contribute to Stable Horde, often results in faster generation
+            models: preferredModels,
+            nsfw: false,
+            censor_nsfw: true,
+            shared: true,
         }, {
             headers: {
                 'Content-Type': 'application/json',
-                'apikey': process.env.STABLE_HORDE_API_KEY, // Your Stable Horde API key
-                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)' // IMPORTANT: Updated with your actual frontend URL
+                'apikey': process.env.STABLE_HORDE_API_KEY,
+                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
             },
-            timeout: 70000, // Increased timeout for image generation (can be slow)
+            timeout: 70000,
         });
 
         if (hordeResponse.data && hordeResponse.data.generations && hordeResponse.data.generations.length > 0) {
@@ -239,9 +242,10 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
     } catch (error) {
         console.error('Error in /generate-image endpoint:', error.response?.data || error.message);
+        console.log('--- DEBUG: Error caught in image generation try/catch. ---'); // DEBUG LOG
         let errorMessage = 'Failed to generate image. Please try again later.';
         if (error.response && error.response.data && error.response.data.message) {
-            errorMessage = `Image generation failed: ${error.response.data.message}`;
+                errorMessage = `Image generation failed: ${error.response.data.message}`;
         } else if (error.code === 'ECONNABORTED') {
             errorMessage = 'Image generation request timed out. This can happen with complex prompts or high traffic. Please try again.';
         }
@@ -250,7 +254,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 });
 
 
-// --- Server Listener ---
+// --- Server Listener (NO CHANGE) ---
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Backend URL: http://localhost:${PORT}`);
