@@ -1,30 +1,27 @@
-// server.js - MetroTex AI Backend (WITH FIREBASE AUTH - RELIABLE SD 1.5 MODELS)
+// server.js - MetroTex AI Backend (WITH HISTORY & IMAGE STORAGE)
 
 require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const admin = require('firebase-admin'); // Firebase Admin SDK is back!
+const admin = require('firebase-admin'); // Firebase Admin SDK
 
 const app = express();
 const PORT = process.env.PORT || 5000; // Use port from environment variable or default to 5000
 
 // --- Firebase Admin SDK Initialization ---
+let db; // Declare Firestore instance globally
+
 try {
-    // Check if the service account path is provided as an environment variable
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-        // Parse the JSON string from the environment variable
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
         console.log('Firebase Admin SDK initialized using environment variable.');
     } else if (process.env.NODE_ENV !== 'production') {
-        // Fallback for local development if a local path is used (not recommended for production)
-        // IMPORTANT: Replace the placeholder filename below with your actual Firebase service account JSON filename
         const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; 
-        // Ensure the file exists for local development, otherwise it will fail
         try {
             const serviceAccount = require(serviceAccountPath);
             admin.initializeApp({
@@ -34,15 +31,17 @@ try {
         } catch (error) {
             console.error('ERROR: Firebase service account file not found locally:', serviceAccountPath);
             console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set in production, or the local file exists.');
-            process.exit(1); // Exit if essential config is missing in dev
+            process.exit(1);
         }
     } else {
         console.error('ERROR: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK not initialized.');
-        process.exit(1); // Exit if essential config is missing in production
+        process.exit(1);
     }
+    db = admin.firestore(); // Initialize Firestore instance AFTER Firebase app is initialized
+    console.log('Firebase Firestore initialized.');
 } catch (error) {
     console.error('Firebase initialization failed:', error);
-    process.exit(1); // Exit if Firebase initialization fails
+    process.exit(1);
 }
 
 // --- Middleware to Verify Firebase ID Token ---
@@ -57,7 +56,7 @@ const verifyIdToken = async (req, res, next) => {
 
     try {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
-        req.user = decodedToken; // Attach decoded token to request
+        req.user = decodedToken; // Attach decoded token to request (contains uid)
         next();
     } catch (error) {
         console.error('Authentication Error:', error.message);
@@ -70,8 +69,8 @@ const verifyIdToken = async (req, res, next) => {
 
 // --- CORS Configuration ---
 const allowedOrigins = [
-    'http://localhost:3000', // For local development of your React app
-    'https://metrotexonline.vercel.app', // <--- YOUR DEPLOYED FRONTEND URL
+    'http://localhost:3000',
+    'https://metrotexonline.vercel.app',
 ];
 
 app.use(cors({
@@ -98,7 +97,7 @@ app.get('/', (req, res) => {
 
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
-    const { message, context } = req.body;
+    const { message, context, conversationId } = req.body; // Added conversationId from frontend
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
@@ -108,6 +107,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         console.error('OPENROUTER_API_KEY is not set in environment variables.');
         return res.status(500).json({ error: 'Server configuration error: OpenRouter API key missing.' });
     }
+
+    const userId = req.user.uid; // Get user ID from authenticated token
 
     try {
         const systemPersona = {
@@ -127,7 +128,6 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
 
         console.log(`Sending chat request to OpenRouter model: ${openRouterModel}`);
-        console.log("Messages being sent:", JSON.stringify(messagesForOpenRouter));
 
         const openRouterResponse = await axios.post(
             'https://openrouter.ai/api/v1/chat/completions',
@@ -150,14 +150,27 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         const reply = openRouterResponse.data.choices[0]?.message?.content;
 
         if (reply) {
-            res.json({ reply: reply });
+            // --- NEW: Save chat history to Firestore ---
+            const chatEntry = {
+                userId: userId,
+                userMessage: message,
+                aiResponse: reply,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(), // Firestore timestamp
+                conversationId: conversationId || db.collection('chat_entries').doc().id // Use provided or generate new ID
+            };
+
+            await db.collection('chat_entries').add(chatEntry);
+            console.log(`Chat entry saved for user ${userId} with conversationId ${chatEntry.conversationId}`);
+            // --- END NEW ---
+
+            res.json({ reply: reply, conversationId: chatEntry.conversationId }); // Return conversationId to frontend
         } else {
             console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
             res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
         }
 
     } catch (error) {
-        console.error('Error calling OpenRouter API:', error.response?.data || error.message);
+        console.error('Error calling OpenRouter API or saving chat:', error.response?.data || error.message);
         let errorMessage = 'Failed to get response from AI (OpenRouter). Please try again.';
         if (error.response && error.response.data) {
             if (error.response.data.error && error.response.data.error.message) {
@@ -190,10 +203,11 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         return res.status(500).json({ error: 'Server configuration error: Image generation key missing.' });
     }
 
+    const userId = req.user.uid; // Get user ID from authenticated token
+
     try {
         console.log(`Attempting to initiate image generation for prompt: "${prompt}"`);
 
-        // SD 1.5 models work best at 512x512. 768x768 is usually okay. 1024x1024 is generally not recommended.
         let width = 512;
         let height = 512;
         if (imageSize === '768x768') {
@@ -205,18 +219,14 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
             height = 1024;
         }
 
-        // Prioritize widely available SD 1.5 models
         const modelGroups = [
-            // Group 1: Common Stable Diffusion 1.5 models for general purpose and high availability
-            [ "Deliberate", "Anything-V3","stable_diffusion", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated", "AbyssOrangeMix2"],
-            // Removed SDXL group entirely based on user feedback for reliability
+            ["stable_diffusion", "Deliberate", "Anything-V3", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated", "AbyssOrangeMix2"],
         ];
 
         let jobId = null;
         let finalModelUsed = "N/A";
         let generationWarning = null;
 
-        // Loop through model groups (though we only have one primary group now)
         for (const modelsToTry of modelGroups) {
             console.log(`Attempting generation with models: [${modelsToTry.join(', ')}]`);
             try {
@@ -228,7 +238,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
                         cfg_scale: 7,
                         steps: 20,
                     },
-                    models: modelsToTry, // Use the current group of models
+                    models: modelsToTry,
                     nsfw: false,
                     censor_nsfw: true,
                     shared: true,
@@ -238,7 +248,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
                         'apikey': process.env.STABLE_HORDE_API_KEY,
                         'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
                     },
-                    timeout: 10000, // Slightly reduced timeout for initiation as SD 1.5 is faster
+                    timeout: 10000,
                 });
 
                 jobId = initiateResponse.data.id;
@@ -248,13 +258,13 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
                 if (generationWarning) {
                     console.warn(`Stable Horde initiation warning for models [${modelsToTry.join(', ')}]: ${generationWarning}`);
-                    jobId = null; // Reset jobId to ensure loop continues (if multiple groups were present)
-                    continue; // Try the next model group (will exit loop if only one)
+                    jobId = null;
+                    continue;
                 }
 
                 if (jobId) {
                     console.log(`Stable Horde generation initiated with model(s) [${finalModelUsed}]. Job ID: ${jobId}`);
-                    break; // Successfully initiated, exit model loop
+                    break;
                 }
 
             } catch (initiateError) {
@@ -262,7 +272,6 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
                 if (initiateError.response?.status === 400) {
                      return res.status(400).json({ error: `Stable Horde Bad Request: ${initiateError.response.data.message || 'Check prompt or parameters.'}` });
                 }
-                // For other errors, continue to next model group (if any)
             }
         }
 
@@ -271,11 +280,10 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
             return res.status(503).json({ error: generationWarning || 'Failed to initiate image generation. No suitable workers found for the selected models. Please try again later.' });
         }
 
-        // --- STEP 2: Poll for the result ---
         let imageUrl = null;
         let attempts = 0;
-        const maxAttempts = 45; // Reduced to ~1.5 minutes (45 * 2 seconds) for SD 1.5 models
-        const pollInterval = 2000; // 2 seconds
+        const maxAttempts = 45;
+        const pollInterval = 2000;
 
         while (!imageUrl && attempts < maxAttempts) {
             attempts++;
@@ -303,7 +311,20 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         }
 
         if (imageUrl) {
-            console.log("Image URL successfully generated:", imageUrl);
+            // --- NEW: Save image generation history to Firestore ---
+            const imageGenerationEntry = {
+                userId: userId,
+                prompt: prompt,
+                imageUrl: imageUrl,
+                modelUsed: finalModelUsed,
+                imageSize: `${width}x${height}`,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            };
+
+            await db.collection('image_generations').add(imageGenerationEntry);
+            console.log(`Image generation entry saved for user ${userId}`);
+            // --- END NEW ---
+
             res.json({ imageUrl: imageUrl, model: finalModelUsed });
         } else {
             console.error(`Stable Horde did not return an image after ${maxAttempts} attempts for job ${jobId}.`);
@@ -311,7 +332,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Error in /generate-image endpoint (overall):', error.response?.data || error.message);
+        console.error('Error in /generate-image endpoint (overall) or saving image:', error.response?.data || error.message);
         let errorMessage = 'Failed to generate image. Please try again later.';
         if (error.response && error.response.data && error.response.data.message) {
             errorMessage = `Image generation failed: ${error.response.data.message}`;
@@ -326,6 +347,74 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     }
 });
 
+// --- NEW: History Retrieval Endpoints ---
+
+// Get Chat History
+app.get('/api/history/chats', verifyIdToken, async (req, res) => {
+    const userId = req.user.uid;
+    try {
+        const chatEntriesRef = db.collection('chat_entries')
+                                  .where('userId', '==', userId)
+                                  .orderBy('timestamp', 'asc'); // Order by oldest first
+
+        const snapshot = await chatEntriesRef.get();
+        const chatHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        // Group messages by conversationId for better display on frontend
+        const conversations = chatHistory.reduce((acc, entry) => {
+            const convId = entry.conversationId;
+            if (!acc[convId]) {
+                acc[convId] = { id: convId, messages: [], createdAt: entry.timestamp };
+            }
+            acc[convId].messages.push({
+                userMessage: entry.userMessage,
+                aiResponse: entry.aiResponse,
+                timestamp: entry.timestamp
+            });
+            // Update createdAt to the first message's timestamp if it's the beginning of the conversation
+            if (acc[convId].messages.length === 1) {
+                acc[convId].createdAt = entry.timestamp;
+            }
+            return acc;
+        }, {});
+
+        // Convert object back to array and sort by conversation createdAt
+        const sortedConversations = Object.values(conversations).sort((a, b) => {
+            if (a.createdAt && b.createdAt) {
+                return a.createdAt.toDate().getTime() - b.createdAt.toDate().getTime();
+            }
+            return 0; // Handle cases where timestamp might be missing
+        });
+
+
+        console.log(`Retrieved chat history for user ${userId}: ${sortedConversations.length} conversations`);
+        res.json(sortedConversations);
+
+    } catch (error) {
+        console.error('Error fetching chat history:', error.message);
+        res.status(500).json({ error: 'Failed to retrieve chat history.' });
+    }
+});
+
+// Get Image Generation History
+app.get('/api/history/images', verifyIdToken, async (req, res) => {
+    const userId = req.user.uid;
+    try {
+        const imageGenerationsRef = db.collection('image_generations')
+                                       .where('userId', '==', userId)
+                                       .orderBy('timestamp', 'desc'); // Order by newest first
+
+        const snapshot = await imageGenerationsRef.get();
+        const imageHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        console.log(`Retrieved image history for user ${userId}: ${imageHistory.length} images`);
+        res.json(imageHistory);
+
+    } catch (error) {
+        console.error('Error fetching image history:', error.message);
+        res.status(500).json({ error: 'Failed to retrieve image history.' });
+    }
+});
 
 // --- Server Listener ---
 app.listen(PORT, () => {
