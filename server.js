@@ -1,4 +1,4 @@
-// server.js - MetroTex AI Backend (WITH FIREBASE AUTH - Prioritizing SDXL with fallbacks)
+// server.js - MetroTex AI Backend (WITH FIREBASE AUTH - RELIABLE SD 1.5 MODELS)
 
 require('dotenv').config(); // Load environment variables from .env file
 
@@ -193,35 +193,30 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     try {
         console.log(`Attempting to initiate image generation for prompt: "${prompt}"`);
 
+        // SD 1.5 models work best at 512x512. 768x768 is usually okay. 1024x1024 is generally not recommended.
         let width = 512;
         let height = 512;
-        // SDXL native resolutions are often 1024x1024 or higher.
-        // For general SD 1.5, 512x512 is best.
         if (imageSize === '768x768') {
             width = 768;
             height = 768;
         } else if (imageSize === '1024x1024') {
+            console.warn('Attempting 1024x1024 with SD 1.5 models. This may lead to poor results or longer queues.');
             width = 1024;
             height = 1024;
         }
-        // Note: For SDXL, 1024x1024 is a native and good resolution.
-        // For SD 1.5 (fallbacks), 512x512 or 768x768 are generally better.
 
-        // Define a list of models in order of preference
-        // SDXL is preferred for quality, followed by widely available SD 1.5 models as fallbacks.
+        // Prioritize widely available SD 1.5 models
         const modelGroups = [
-            ["SDXL", "DreamShaper XL", "Animagine XL", "ZavyChromaXL"], // Group 1: SDXL models
-            // Group 2: Common Stable Diffusion 1.5 models for general purpose and fallback
-            ["Anything-V3", "stable_diffusion", "Deliberate", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated"],
-            // You can add more specific or niche models here if desired and verified via Stable Horde API
-            // Check https://stablehorde.net/api/v2/status/models for current active models
+            // Group 1: Common Stable Diffusion 1.5 models for general purpose and high availability
+            [ "Deliberate", "Anything-V3","stable_diffusion", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated", "AbyssOrangeMix2"],
+            // Removed SDXL group entirely based on user feedback for reliability
         ];
 
         let jobId = null;
         let finalModelUsed = "N/A";
         let generationWarning = null;
 
-        // Loop through model groups to find an available worker
+        // Loop through model groups (though we only have one primary group now)
         for (const modelsToTry of modelGroups) {
             console.log(`Attempting generation with models: [${modelsToTry.join(', ')}]`);
             try {
@@ -243,19 +238,18 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
                         'apikey': process.env.STABLE_HORDE_API_KEY,
                         'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)'
                     },
-                    timeout: 15000, // Timeout for initiation
+                    timeout: 10000, // Slightly reduced timeout for initiation as SD 1.5 is faster
                 });
 
                 jobId = initiateResponse.data.id;
-                finalModelUsed = initiateResponse.data.model || modelsToTry[0]; // Stable Horde often returns the actual model chosen
+                finalModelUsed = initiateResponse.data.model || modelsToTry[0];
                 generationWarning = (initiateResponse.data.warnings && initiateResponse.data.warnings.some(w => w.code === 'NoAvailableWorker')) ?
                                     (initiateResponse.data.message || 'No available workers for these models/size.') : null;
 
                 if (generationWarning) {
                     console.warn(`Stable Horde initiation warning for models [${modelsToTry.join(', ')}]: ${generationWarning}`);
-                    // Continue to next model group if no workers found for this group
-                    jobId = null; // Reset jobId to ensure loop continues
-                    continue; // Try the next model group
+                    jobId = null; // Reset jobId to ensure loop continues (if multiple groups were present)
+                    continue; // Try the next model group (will exit loop if only one)
                 }
 
                 if (jobId) {
@@ -265,25 +259,22 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
             } catch (initiateError) {
                 console.error(`Error initiating with models [${modelsToTry.join(', ')}]:`, initiateError.response?.data || initiateError.message);
-                // If the error is not a "NoAvailableWorker" (e.g., 400 Bad Request, API key issue),
-                // it's a more serious problem, so we re-throw or handle it specifically.
                 if (initiateError.response?.status === 400) {
                      return res.status(400).json({ error: `Stable Horde Bad Request: ${initiateError.response.data.message || 'Check prompt or parameters.'}` });
                 }
-                // For other errors, we can try the next model group, but log it.
+                // For other errors, continue to next model group (if any)
             }
         }
 
         if (!jobId) {
-            console.error('Failed to initiate image generation after trying all model groups.');
-            // Return the last warning if one occurred, or a generic message
-            return res.status(503).json({ error: generationWarning || 'Failed to initiate image generation. No suitable workers found for any model in the list. Please try again later.' });
+            console.error('Failed to initiate image generation after trying available SD 1.5 models.');
+            return res.status(503).json({ error: generationWarning || 'Failed to initiate image generation. No suitable workers found for the selected models. Please try again later.' });
         }
 
         // --- STEP 2: Poll for the result ---
         let imageUrl = null;
         let attempts = 0;
-        const maxAttempts = 90; // Increased to 3 minutes (90 * 2 seconds) for SDXL
+        const maxAttempts = 45; // Reduced to ~1.5 minutes (45 * 2 seconds) for SD 1.5 models
         const pollInterval = 2000; // 2 seconds
 
         while (!imageUrl && attempts < maxAttempts) {
@@ -316,7 +307,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
             res.json({ imageUrl: imageUrl, model: finalModelUsed });
         } else {
             console.error(`Stable Horde did not return an image after ${maxAttempts} attempts for job ${jobId}.`);
-            res.status(504).json({ error: 'Image generation timed out on Stable Horde. This can happen with complex prompts, high resolutions, or low worker availability. Please try again or simplify your request.' });
+            res.status(504).json({ error: 'Image generation timed out on Stable Horde. This can happen with very complex prompts, larger resolutions, or unusually low worker availability. Please try again or simplify your request.' });
         }
 
     } catch (error) {
