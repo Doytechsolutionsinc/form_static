@@ -10,7 +10,7 @@ const admin = require('firebase-admin'); // Firebase Admin SDK is back!
 const app = express();
 const PORT = process.env.PORT || 5000; // Use port from environment variable or default to 5000
 
-// --- Firebase Admin SDK Initialization (BACK IN!) ---
+// --- Firebase Admin SDK Initialization ---
 try {
     // Check if the service account path is provided as an environment variable
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -22,7 +22,8 @@ try {
         console.log('Firebase Admin SDK initialized using environment variable.');
     } else if (process.env.NODE_ENV !== 'production') {
         // Fallback for local development if a local path is used (not recommended for production)
-        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; // Replace with your actual path
+        // IMPORTANT: Replace the placeholder filename below with your actual Firebase service account JSON filename
+        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; 
         // Ensure the file exists for local development, otherwise it will fail
         try {
             const serviceAccount = require(serviceAccountPath);
@@ -44,7 +45,7 @@ try {
     process.exit(1); // Exit if Firebase initialization fails
 }
 
-// --- Middleware to Verify Firebase ID Token (BACK IN!) ---
+// --- Middleware to Verify Firebase ID Token ---
 const verifyIdToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -67,7 +68,7 @@ const verifyIdToken = async (req, res, next) => {
     }
 };
 
-// --- CORS Configuration (NO CHANGE) ---
+// --- CORS Configuration ---
 const allowedOrigins = [
     'http://localhost:3000', // For local development of your React app
     'https://metrotexonline.vercel.app', // <--- YOUR DEPLOYED FRONTEND URL
@@ -90,13 +91,13 @@ app.use(cors({
 
 app.use(express.json()); // Body parser for JSON requests
 
-// --- Basic Route (NO CHANGE) ---
+// --- Basic Route ---
 app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
-// --- AI Chat Endpoint (verifyIdToken IS BACK!) ---
-app.post('/chat', verifyIdToken, async (req, res) => { // <<< verifyIdToken IS BACK
+// --- AI Chat Endpoint ---
+app.post('/chat', verifyIdToken, async (req, res) => {
     const { message, context } = req.body;
 
     if (!message) {
@@ -171,33 +172,30 @@ app.post('/chat', verifyIdToken, async (req, res) => { // <<< verifyIdToken IS B
     }
 });
 
-// --- Image Generation Endpoint (verifyIdToken IS BACK! WITH DEBUG LOGS) ---
-app.post('/generate-image', verifyIdToken, async (req, res) => { // <<< verifyIdToken IS BACK
-    console.log('--- DEBUG: Image generation endpoint hit! ---'); // DEBUG LOG
-    console.log('--- DEBUG: Request body:', req.body); // DEBUG LOG
+// --- Image Generation Endpoint ---
+app.post('/generate-image', verifyIdToken, async (req, res) => {
+    console.log('--- DEBUG: Image generation endpoint hit! ---');
+    console.log('--- DEBUG: Request body:', req.body);
 
     const { prompt, imageSize } = req.body;
 
     if (!prompt) {
-        console.log('--- DEBUG: Prompt missing. ---'); // DEBUG LOG
+        console.log('--- DEBUG: Prompt missing. ---');
         return res.status(400).json({ error: 'Image prompt is required.' });
     }
 
     if (!process.env.STABLE_HORDE_API_KEY) {
         console.error('STABLE_HORDE_API_KEY is not set in environment variables.');
-        console.log('--- DEBUG: STABLE_HORDE_API_KEY missing. ---'); // DEBUG LOG
+        console.log('--- DEBUG: STABLE_HORDE_API_KEY missing. ---');
         return res.status(500).json({ error: 'Server configuration error: Image generation key missing.' });
     }
 
     try {
         console.log(`Attempting to generate image for prompt: "${prompt}"`);
 
+        // Changed to use only "SDXL" as the preferred model
         const preferredModels = [
-            "SDXL",
-            "AI Scribbles",
-            "Dreamshaper",
-            "Deliberate",
-            "stable_diffusion"
+            "SDXL"
         ];
 
         let width = 512;
@@ -242,19 +240,21 @@ app.post('/generate-image', verifyIdToken, async (req, res) => { // <<< verifyId
 
     } catch (error) {
         console.error('Error in /generate-image endpoint:', error.response?.data || error.message);
-        console.log('--- DEBUG: Error caught in image generation try/catch. ---'); // DEBUG LOG
+        console.log('--- DEBUG: Error caught in image generation try/catch. ---');
         let errorMessage = 'Failed to generate image. Please try again later.';
         if (error.response && error.response.data && error.response.data.message) {
                 errorMessage = `Image generation failed: ${error.response.data.message}`;
         } else if (error.code === 'ECONNABORTED') {
             errorMessage = 'Image generation request timed out. This can happen with complex prompts or high traffic. Please try again.';
+        } else if (error.response && error.response.status === 404) { // Specifically catch 404 from Stable Horde
+            errorMessage = 'Image generation service not found. This might be a temporary issue with the image API, or a misconfiguration.';
         }
         res.status(500).json({ error: errorMessage });
     }
 });
 
 
-// --- Server Listener (NO CHANGE) ---
+// --- Server Listener ---
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Backend URL: http://localhost:${PORT}`);
