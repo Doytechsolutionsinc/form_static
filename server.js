@@ -70,8 +70,7 @@ const verifyIdToken = async (req, res, next) => {
 // --- CORS Configuration ---
 const allowedOrigins = [
     'http://localhost:3000', // For local development of your React app
-    'https://metrotex-ai.vercel.app', // IMPORTANT: Replace with your actual deployed frontend URL on Vercel
-    'https://metroteex-ai.vercel.app' // Just in case of typo, replace with actual
+    'https://metrotexonline.vercel.app', // <--- YOUR DEPLOYED FRONTEND URL
 ];
 
 app.use(cors({
@@ -79,7 +78,8 @@ app.use(cors({
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         if (allowedOrigins.indexOf(origin) === -1) {
-            const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}.`;
+            console.error(msg); // Log the problematic origin for debugging
             return callback(new Error(msg), false);
         }
         return callback(null, true);
@@ -152,7 +152,7 @@ app.post('/chat', verifyIdToken, async (req, res) => {
 
 // --- Image Generation Endpoint (using Stable Horde) ---
 app.post('/generate-image', verifyIdToken, async (req, res) => {
-    const { prompt, imageSize } = req.body; // imageSize is sent from frontend but not used by Stable Horde via this backend logic currently
+    const { prompt, imageSize } = req.body;
 
     if (!prompt) {
         return res.status(400).json({ error: 'Image prompt is required.' });
@@ -203,7 +203,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
             headers: {
                 'Content-Type': 'application/json',
                 'apikey': process.env.STABLE_HORDE_API_KEY, // Your Stable Horde API key
-                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app/)' // IMPORTANT: Replace with your actual frontend URL for identification
+                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app)' // IMPORTANT: Updated with your actual frontend URL
             },
             timeout: 70000, // Increased timeout for image generation (can be slow)
         });
