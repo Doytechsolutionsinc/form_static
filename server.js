@@ -1,280 +1,237 @@
-require('dotenv').config(); // Load environment variables from .env file (for local development)
+// server.js - MetroTex AI Backend
+
+require('dotenv').config(); // Load environment variables from .env file
+
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 const admin = require('firebase-admin');
-const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000; // Use port from environment variable or default to 5000
 
-// Initialize Firebase Admin SDK
+// --- Firebase Admin SDK Initialization ---
 try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-    });
-    console.log('Firebase Admin SDK initialized successfully.');
+    // Check if the service account path is provided as an environment variable
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        // Parse the JSON string from the environment variable
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        console.log('Firebase Admin SDK initialized using environment variable.');
+    } else if (process.env.NODE_ENV !== 'production') {
+        // Fallback for local development if a local path is used (not recommended for production)
+        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; // Replace with your actual path
+        // Ensure the file exists for local development, otherwise it will fail
+        try {
+            const serviceAccount = require(serviceAccountPath);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log('Firebase Admin SDK initialized using local file path (development).');
+        } catch (error) {
+            console.error('ERROR: Firebase service account file not found locally:', serviceAccountPath);
+            console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set in production, or the local file exists.');
+            process.exit(1); // Exit if essential config is missing in dev
+        }
+    } else {
+        console.error('ERROR: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK not initialized.');
+        process.exit(1); // Exit if essential config is missing in production
+    }
 } catch (error) {
-    console.error('Failed to initialize Firebase Admin SDK:', error.message);
-    console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY is correctly set and is valid JSON.');
-    // Exit if Firebase fails to initialize, as it's critical for authentication
-    // In a production app, you might want a more graceful error, but for setup, this is fine.
-    // process.exit(1); // Uncomment this line if you want the app to crash on Firebase init failure
+    console.error('Firebase initialization failed:', error);
+    process.exit(1); // Exit if Firebase initialization fails
 }
 
-// Middleware
-app.use(cors()); // Enable CORS for all origins. In production, configure this more strictly.
-app.use(express.json()); // Body parser for JSON requests
-
-// Middleware to verify Firebase ID token (for authenticated routes)
-const verifyToken = async (req, res, next) => {
+// --- Middleware to Verify Firebase ID Token ---
+const verifyIdToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log('Authentication: No token provided or invalid format.');
-        return res.status(401).send('Unauthorized: No token provided or invalid format.');
+        console.warn('Authentication: No token provided or invalid format.');
+        return res.status(401).json({ error: 'Unauthorized: No token provided.' });
     }
 
     const idToken = authHeader.split('Bearer ')[1];
 
     try {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
-        req.user = decodedToken; // Attach user info (e.g., uid) to the request
-        console.log('Authentication: Token verified for user:', req.user.uid);
+        req.user = decodedToken; // Attach decoded token to request
         next();
     } catch (error) {
-        console.error('Authentication: Error verifying token:', error.message);
-        return res.status(403).send('Unauthorized: Invalid token.');
+        console.error('Authentication Error:', error.message);
+        if (error.code === 'auth/id-token-expired') {
+            return res.status(401).json({ error: 'Unauthorized: Token expired. Please log in again.' });
+        }
+        return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
     }
 };
 
-// --- ROUTES ---
+// --- CORS Configuration ---
+const allowedOrigins = [
+    'http://localhost:3000', // For local development of your React app
+    'https://metrotex-ai.vercel.app', // IMPORTANT: Replace with your actual deployed frontend URL on Vercel
+    'https://metroteex-ai.vercel.app' // Just in case of typo, replace with actual
+];
 
-// Simple root route to check if the backend is running
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true, // Allow cookies to be sent
+    optionsSuccessStatus: 204 // For preflight requests
+}));
+
+app.use(express.json()); // Body parser for JSON requests
+
+// --- Basic Route ---
 app.get('/', (req, res) => {
-    res.send('MetroTex Backend is running!');
+    res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
-// Chat Endpoint: Handles AI conversation with persona and memory
-app.post('/chat', verifyToken, async (req, res) => {
-    // 'message' is the current user's input string
-    // 'context' is the array of previous messages (history) sent from the frontend
+// --- AI Chat Endpoint ---
+app.post('/chat', verifyIdToken, async (req, res) => {
     const { message, context } = req.body;
-    const userId = req.user.uid; // User ID from verified Firebase token
 
-    console.log(`Chat Request for user ${userId}:`);
-    console.log(`- Current message: "${message}"`);
-    console.log(`- Received context length: ${context ? context.length : 0}`);
+    if (!message) {
+        return res.status(400).json({ error: 'Message is required.' });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+        console.error('GEMINI_API_KEY is not set in environment variables.');
+        return res.status(500).json({ error: 'Server configuration error: AI service key missing.' });
+    }
 
     try {
-        let messagesToSend = [];
+        // Construct messages array for Gemini, including history
+        const messagesForGemini = context.map(msg => ({
+            role: msg.role,
+            parts: [{ text: msg.content }]
+        }));
 
-        // 1. Add the SYSTEM message first: This defines MetroTex's persona and core instructions.
-        // This is crucial for consistent identity and behavior.
-        messagesToSend.push({
-            role: 'system',
-            content: `You are MetroTex AI, a helpful, friendly, and informative AI assistant.
-            Your designation is MetroTex AI.
-            You were created by Doy Tech Solutions Inc.
-            Your owner is Desmond Owusu Yeboah.
-            When asked for your name, you should respond as "MetroTex AI".
-            You do not identify as MistralAI, OpenAI, Google, or any other underlying model name.
-            Always maintain a polite, professional, and empathetic tone.
-            It is important that you remember the user's name if they state it in the conversation. When the user asks "What is my name?", you should recall the name they provided earlier in this conversation, if available.
-            If asked about your creation date, state that you are a continually evolving AI.
-            Respond concisely unless asked for more detail.
-            `
-        });
-
-        // 2. Add the conversational context (chat history) from the frontend.
-        // This makes the AI "remember" previous turns.
-        // Frontend 'bot' sender maps to 'assistant' role for the AI.
-        // Frontend 'user' sender maps to 'user' role for the AI.
-        if (context && Array.isArray(context) && context.length > 0) {
-            // Use concat to append to the existing system message array
-            messagesToSend = messagesToSend.concat(context.map(msg => ({
-                role: msg.sender === 'user' ? 'user' : 'assistant',
-                content: msg.text // Assuming frontend sends { text: "...", sender: "..." }
-            })));
-        }
-
-        // 3. Add the current user message to the very end of the messages array.
-        // This is the prompt the AI will primarily respond to.
-        messagesToSend.push({ role: 'user', content: message });
-
-        // --- DEBUGGING LOG ---
-        console.log("BACKEND_DEBUG: Full messages array sent to OpenRouter API:");
-        console.log(JSON.stringify(messagesToSend, null, 2)); // Pretty print for easier reading in logs
-        // --- END DEBUGGING LOG ---
-
-        // Make the API call to OpenRouter for chat completions
-        const openrouterResponse = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions',
+        const geminiResponse = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
             {
-                // MODEL CHOICE:
-                // 'mistralai/mistral-7b-instruct' is generally free or low-cost on OpenRouter.
-                // If you switch to 'google/gemini-pro' or other paid models, remember to manage OpenRouter credits.
-                model: 'mistralai/mistral-7b-instruct',
-                messages: messagesToSend, // The complete conversation history + system persona
-                max_tokens: 500, // Maximum length for the AI's response (adjust as needed)
-                temperature: 0.7, // Controls creativity (0.0 = very direct, 1.0 = very creative)
+                contents: messagesForGemini
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // Your OpenRouter API Key
-                    'Content-Type': 'application/json',
-                    // Optional OpenRouter headers for tracking/analytics:
-                    // 'HTTP-Referer': 'https://your-frontend-domain.com', // Your frontend's URL
-                    // 'X-Title': 'MetroTex Chat App', // Your app's name
+                    'Content-Type': 'application/json'
                 },
-                timeout: 20000 // Timeout for the API call (20 seconds)
+                timeout: 15000 // Increased timeout for AI response
             }
         );
 
-        // Extract the AI's response content
-        const aiResponseContent = openrouterResponse.data.choices[0].message.content;
-        console.log("AI Response received:", aiResponseContent);
+        const reply = geminiResponse.data.candidates[0]?.content?.parts[0]?.text;
 
-        // Send the AI's response back to the frontend
-        res.json({ reply: aiResponseContent });
+        if (reply) {
+            res.json({ reply: reply });
+        } else {
+            console.warn('Gemini API did not return a valid reply:', geminiResponse.data);
+            res.status(500).json({ error: "Sorry, I couldn't generate a response. Please try again." });
+        }
 
     } catch (error) {
-        console.error('Backend Chat Error:', error.message);
-        if (error.response) {
-            console.error('OpenRouter API Error Status:', error.response.status);
-            console.error('OpenRouter API Error Data:', JSON.stringify(error.response.data, null, 2)); // Pretty print error data
-
-            // Specific error handling based on OpenRouter API responses
-            if (error.response.status === 402) {
-                return res.status(402).json({ error: 'AI service requires more credits or lower max_tokens. Please check your OpenRouter account.' });
-            }
-            if (error.response.status === 401) {
-                return res.status(401).json({ error: 'Invalid OpenRouter API key or authentication issue. Please check your backend configuration.' });
-            }
-            // Catch-all for other API errors
-            return res.status(error.response.status).json({ error: error.response.data.error || 'An error occurred with the AI service.' });
+        console.error('Error calling Gemini API:', error.response?.data || error.message);
+        let errorMessage = 'Failed to get response from AI. Please try again.';
+        if (error.response && error.response.data && error.response.data.error) {
+            errorMessage = `AI Error: ${error.response.data.error.message || 'Unknown AI error'}`;
+        } else if (error.code === 'ECONNABORTED') {
+            errorMessage = 'AI response timed out. Please try again or simplify your message.';
         }
-        // Handle network errors or other unexpected errors
-        res.status(500).json({ error: 'An unexpected error occurred with the AI service or network.' });
+        res.status(500).json({ error: errorMessage });
     }
 });
 
-// Image Generation Endpoint: Uses Stable Horde to generate images asynchronously
-app.post('/generate-image', verifyToken, async (req, res) => {
-    // 'prompt' is the description for the image
-    // Optional parameters: width, height, samplers, steps
-    const { prompt, width = 512, height = 512, samplers = 'k_euler_a', steps = 20 } = req.body;
-    const userId = req.user.uid; // User ID from verified Firebase token
-
-    console.log(`Image Generation Request for user ${userId}:`);
-    console.log(`- Prompt: "${prompt}"`);
+// --- Image Generation Endpoint (using Stable Horde) ---
+app.post('/generate-image', verifyIdToken, async (req, res) => {
+    const { prompt, imageSize } = req.body; // imageSize is sent from frontend but not used by Stable Horde via this backend logic currently
 
     if (!prompt) {
         return res.status(400).json({ error: 'Image prompt is required.' });
     }
 
-    // IMPORTANT: Get your own API Key from stablehorde.net/register for better priority.
-    // '0000000000' is the anonymous key and has the lowest priority, leading to long waits.
-    const STABLE_HORDE_API_KEY = process.env.STABLE_HORDE_API_KEY || '0000000000';
+    if (!process.env.STABLE_HORDE_API_KEY) {
+        console.error('STABLE_HORDE_API_KEY is not set in environment variables.');
+        return res.status(500).json({ error: 'Server configuration error: Image generation key missing.' });
+    }
 
     try {
-        // 1. Initiate the image generation request with Stable Horde (asynchronous)
-        const generateResponse = await axios.post('https://stablehorde.net/api/v2/generate/async', {
+        console.log(`Attempting to generate image for prompt: "${prompt}"`);
+
+        // Define your preferred models with fallbacks
+        // The order matters: Stable Horde will try to use the first available model from this list.
+        const preferredModels = [
+            "AI Scribbles",       // Your primary choice for the "scribble" style
+            "SDXL",               // High quality, versatile base model
+            "Dreamshaper",        // Very popular for artistic and good general results
+            "Deliberate",         // Another popular model, often good for realism and detail
+            "stable_diffusion"    // The original Stable Diffusion 1.5, a solid fallback
+        ];
+
+        // Prepare image dimensions based on imageSize from frontend
+        let width = 512;
+        let height = 512;
+        if (imageSize === '768x768') {
+            width = 768;
+            height = 768;
+        } else if (imageSize === '1024x1024') {
+            width = 1024;
+            height = 1024;
+        }
+
+        const hordeResponse = await axios.post('https://stablehorde.net/api/v2/generate/sync', {
             prompt: prompt,
             params: {
-                sampler_name: samplers,
-                cfg_scale: 7, // Classifier-free guidance scale: how much the image follows the prompt
-                // CORRECTED LINE: Convert the random number to a string for the 'seed' parameter
-                seed: String(Math.floor(Math.random() * 1000000000)), // Convert to string as per error
-                steps: steps, // Number of diffusion steps
-                width: width,
-                height: height,
+                width: width,   // Use dynamically set width
+                height: height, // Use dynamically set height
+                cfg_scale: 7,   // How strongly the image should conform to the prompt (7 is a good default)
+                steps: 20,      // Number of steps to generate the image (20-30 is common)
             },
-            nsfw: false, // Set to true if you explicitly want NSFW images (use with extreme caution!)
-            censor_nsfw: true, // Censors NSFW images even if nsfw is true (recommended)
-            // Optional: Donate kudos for faster generation (e.g., 'kudos': 100)
-            // Optional: Provide your client agent for monitoring/debugging on Stable Horde's side
-            client_agent: "MetroTexAI:1.0:by_Desmond_Owusu_Yeboah",
-            // Other optional parameters: models (e.g., ['Anything-V3']), workers, etc.
+            models: preferredModels, // Use the defined array of models
+            nsfw: false, // Set to true if you want to allow NSFW content. Be cautious for public apps.
+            censor_nsfw: true, // IMPORTANT: Ensure NSFW images are censored for public consumption if nsfw: true
+            shared: true, // Helps contribute to Stable Horde, often results in faster generation
         }, {
             headers: {
                 'Content-Type': 'application/json',
-                'apikey': STABLE_HORDE_API_KEY, // Your Stable Horde API Key
+                'apikey': process.env.STABLE_HORDE_API_KEY, // Your Stable Horde API key
+                'Client-Agent': 'metrotex-ai-app:1.0: (https://metrotexonline.vercel.app/)' // IMPORTANT: Replace with your actual frontend URL for identification
             },
-            timeout: 60000 // Increased timeout for initial request (60 seconds)
+            timeout: 70000, // Increased timeout for image generation (can be slow)
         });
 
-        const generationId = generateResponse.data.id;
-        console.log(`Stable Horde Generation initiated with ID: ${generationId}`);
-
-        // 2. Poll for the image generation status (Stable Horde is asynchronous, requires polling)
-        let checkStatusResponse;
-        let done = false;
-        let attempts = 0;
-        const maxAttempts = 60; // Max attempts to poll (e.g., 60 * 3 seconds = 3 minutes)
-        const pollInterval = 3000; // Poll every 3 seconds
-
-        while (!done && attempts < maxAttempts) {
-            attempts++;
-            await new Promise(resolve => setTimeout(resolve, pollInterval)); // Wait for poll interval
-
-            checkStatusResponse = await axios.get(`https://stablehorde.net/api/v2/generate/check/${generationId}`, {
-                headers: { 'apikey': STABLE_HORDE_API_KEY },
-                timeout: 30000 // Timeout for each polling request
-            });
-
-            console.log(`Polling status for ${generationId} (attempt ${attempts}):`, checkStatusResponse.data);
-
-            if (checkStatusResponse.data.done) {
-                done = true; // Generation is complete
-            } else if (checkStatusResponse.data.faulted) {
-                // Generation failed on the worker side
-                console.error('Stable Horde generation faulted:', checkStatusResponse.data);
-                return res.status(500).json({ error: 'Image generation failed on Stable Horde.' });
-            } else if (checkStatusResponse.data.is_possible === false) {
-                 // No workers available or request deemed impossible
-                 console.error('Stable Horde: No workers available or request impossible.', checkStatusResponse.data);
-                 return res.status(503).json({ error: 'No Stable Horde workers available for your request or request deemed impossible. Please try again later.' });
-            }
-        }
-
-        if (!done) {
-            // If loop finishes without 'done' being true, it's a timeout
-            console.error(`Image generation timed out after ${maxAttempts} attempts for ID: ${generationId}`);
-            return res.status(504).json({ error: 'Image generation timed out. Please try again.' });
-        }
-
-        // 3. Get the generated images from the completed status
-        const fetchImagesResponse = await axios.get(`https://stablehorde.net/api/v2/generate/status/${generationId}`, {
-            headers: { 'apikey': STABLE_HORDE_API_KEY },
-            timeout: 30000
-        });
-
-        const generatedImages = fetchImagesResponse.data.generations;
-
-        if (generatedImages && generatedImages.length > 0) {
-            // Return the URL of the first generated image
-            const imageUrl = generatedImages[0].img;
-            console.log("Image generated successfully:", imageUrl);
+        if (hordeResponse.data && hordeResponse.data.generations && hordeResponse.data.generations.length > 0) {
+            const imageUrl = hordeResponse.data.generations[0].img;
+            console.log("Image URL successfully generated:", imageUrl);
             res.json({ imageUrl: imageUrl });
         } else {
-            console.error('No images returned from Stable Horde for ID:', generationId, fetchImagesResponse.data);
-            res.status(500).json({ error: 'Image generation completed, but no image URL was returned.' });
+            console.error('Stable Horde response did not contain valid image data:', hordeResponse.data);
+            res.status(500).json({ error: 'Failed to generate image: No valid image data returned from service.' });
         }
 
     } catch (error) {
-        console.error('Backend Image Generation Error:', error.message);
-        if (error.response) {
-            console.error('Stable Horde API Error Status:', error.response.status);
-            console.error('Stable Horde API Error Data:', JSON.stringify(error.response.data, null, 2)); // Pretty print error data
-            return res.status(error.response.status).json({ error: error.response.data });
+        console.error('Error in /generate-image endpoint:', error.response?.data || error.message);
+        let errorMessage = 'Failed to generate image. Please try again later.';
+        if (error.response && error.response.data && error.response.data.message) {
+            errorMessage = `Image generation failed: ${error.response.data.message}`;
+        } else if (error.code === 'ECONNABORTED') {
+            errorMessage = 'Image generation request timed out. This can happen with complex prompts or high traffic. Please try again.';
         }
-        res.status(500).json({ error: 'An unexpected error occurred during image generation.' });
+        res.status(500).json({ error: errorMessage });
     }
 });
 
 
-// Start the server
+// --- Server Listener ---
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
+    console.log(`Backend URL: http://localhost:${PORT}`);
 });
