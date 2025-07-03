@@ -1,307 +1,280 @@
-// server.js (Node.js/Express Backend)
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
 require('dotenv').config(); // Load environment variables from .env file (for local development)
-
-// Firebase Admin SDK Imports and Initialization
+const express = require('express');
+const axios = require('axios');
 const admin = require('firebase-admin');
-
-// --- IMPORTANT: Service Account Key Handling ---
-// This block determines how the Firebase Service Account Key is loaded.
-// For Render/Production: It expects the key as a JSON string in an environment variable.
-// For Local Development: It can optionally load from a local JSON file (serviceAccountKey.json).
-let serviceAccount;
-try {
-    // Check if the environment variable is set (this is for Render/production)
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-        // Parse the JSON string from the environment variable
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-    } else {
-        // Fallback for local development: try to load from a local file
-        // Ensure 'serviceAccountKey.json' is in your backend project's root
-        // and is listed in your .gitignore file to prevent accidental commits!
-        console.warn('FIREBASE_SERVICE_ACCOUNT_KEY environment variable not found. Attempting to load from ./serviceAccountKey.json');
-        serviceAccount = require('./serviceAccountKey.json');
-    }
-} catch (error) {
-    console.error('Failed to load or parse Firebase Service Account Key:', error);
-    console.error('Please ensure:');
-    console.error('1. For Render/Production: The FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set correctly as a single-line JSON string.');
-    console.error('2. For Local Development: A valid serviceAccountKey.json file exists in your backend root, or the environment variable is set locally.');
-    process.exit(1); // Exit the process if the key cannot be loaded, as Firebase Admin SDK needs it.
-}
-
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore(); // Get Firestore instance for backend operations
-const authAdmin = admin.auth(); // Get Auth instance for backend operations (for token verification)
+const cors = require('cors');
 
 const app = express();
+const PORT = process.env.PORT || 5000;
 
-// Configure CORS
-// IMPORTANT: Replace 'https://metrotexonline.vercel.app' with your actual Vercel frontend URL
-// For local development, you might add 'http://localhost:5173' or whatever port your frontend runs on
-app.use(cors({ origin: 'https://metrotexonline.vercel.app' }));
-app.use(express.json()); // Middleware to parse JSON request bodies
-
-// Middleware to authenticate Firebase ID Token
-async function authenticateToken(req, res, next) {
-    const idToken = req.headers.authorization?.split('Bearer ')[1];
-
-    if (!idToken) {
-        return res.status(401).json({ error: 'Unauthorized: No token provided.' });
-    }
-
-    try {
-        const decodedToken = await authAdmin.verifyIdToken(idToken);
-        req.userId = decodedToken.uid; // Attach user ID to the request
-        next();
-    } catch (error) {
-        console.error("Error verifying Firebase ID token:", error);
-        // More specific error handling for user feedback
-        if (error.code === 'auth/id-token-expired') {
-            return res.status(401).json({ error: 'Unauthorized: Session expired. Please log in again.' });
-        }
-        return res.status(403).json({ error: 'Unauthorized: Invalid token.' });
-    }
+// Initialize Firebase Admin SDK
+try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('Firebase Admin SDK initialized successfully.');
+} catch (error) {
+    console.error('Failed to initialize Firebase Admin SDK:', error.message);
+    console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY is correctly set and is valid JSON.');
+    // Exit if Firebase fails to initialize, as it's critical for authentication
+    // In a production app, you might want a more graceful error, but for setup, this is fine.
+    // process.exit(1); // Uncomment this line if you want the app to crash on Firebase init failure
 }
 
-// --- API ENDPOINTS ---
+// Middleware
+app.use(cors()); // Enable CORS for all origins. In production, configure this more strictly.
+app.use(express.json()); // Body parser for JSON requests
 
-// Basic Health Check or Root Endpoint
-app.get('/', (req, res) => {
-    res.status(200).send('MetroTex Backend is running!');
-});
+// Middleware to verify Firebase ID token (for authenticated routes)
+const verifyToken = async (req, res, next) => {
+    const authHeader = req.headers.authorization;
 
-
-// 1. Chat Endpoint (MODIFIED to handle conversation history and OpenRouter)
-app.post('/chat', authenticateToken, async (req, res) => {
-    const { message, conversationId } = req.body; // Expect message and optionally conversationId
-    const userId = req.userId; // Obtained from authenticateToken middleware
-
-    if (!message?.trim()) {
-        return res.status(400).json({ error: "Message is required." });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('Authentication: No token provided or invalid format.');
+        return res.status(401).send('Unauthorized: No token provided or invalid format.');
     }
 
+    const idToken = authHeader.split('Bearer ')[1];
+
     try {
-        let currentConversationRef;
-        let currentConversationId = conversationId;
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        req.user = decodedToken; // Attach user info (e.g., uid) to the request
+        console.log('Authentication: Token verified for user:', req.user.uid);
+        next();
+    } catch (error) {
+        console.error('Authentication: Error verifying token:', error.message);
+        return res.status(403).send('Unauthorized: Invalid token.');
+    }
+};
 
-        if (!currentConversationId) {
-            // If no conversationId provided, create a new conversation document
-            currentConversationRef = db.collection('users').doc(userId).collection('conversations').doc();
-            currentConversationId = currentConversationRef.id;
-            console.log(`Creating new conversation for user ${userId} with ID: ${currentConversationId}`);
+// --- ROUTES ---
 
-            await currentConversationRef.set({
-                title: message.substring(0, 50) + (message.length > 50 ? '...' : ''), // First 50 chars as title
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                // You can add other initial metadata here like 'tags', 'summary' etc.
-            });
-        } else {
-            // If conversationId is provided, get its reference and update last updated time
-            currentConversationRef = db.collection('users').doc(userId).collection('conversations').doc(currentConversationId);
-            // Optional: Verify conversation exists and belongs to user (good for robustness)
-            const conversationDoc = await currentConversationRef.get();
-            if (!conversationDoc.exists) {
-                console.warn(`Conversation ${currentConversationId} not found for user ${userId}. Creating new one.`);
-                // Fallback: if not found, create new (shouldn't happen with proper frontend flow)
-                currentConversationRef = db.collection('users').doc(userId).collection('conversations').doc();
-                currentConversationId = currentConversationRef.id;
-                await currentConversationRef.set({
-                    title: message.substring(0, 50) + (message.length > 50 ? '...' : ''),
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                });
-            } else {
-                await currentConversationRef.update({
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-                });
-            }
-        }
+// Simple root route to check if the backend is running
+app.get('/', (req, res) => {
+    res.send('MetroTex Backend is running!');
+});
 
-        const messagesCollectionRef = currentConversationRef.collection('messages');
+// Chat Endpoint: Handles AI conversation with persona and memory
+app.post('/chat', verifyToken, async (req, res) => {
+    // 'message' is the current user's input string
+    // 'context' is the array of previous messages (history) sent from the frontend
+    const { message, context } = req.body;
+    const userId = req.user.uid; // User ID from verified Firebase token
 
-        // Save user message to Firestore
-        await messagesCollectionRef.add({
-            sender: 'user',
-            text: message,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
+    console.log(`Chat Request for user ${userId}:`);
+    console.log(`- Current message: "${message}"`);
+    console.log(`- Received context length: ${context ? context.length : 0}`);
+
+    try {
+        let messagesToSend = [];
+
+        // 1. Add the SYSTEM message first: This defines MetroTex's persona and core instructions.
+        // This is crucial for consistent identity and behavior.
+        messagesToSend.push({
+            role: 'system',
+            content: `You are MetroTex AI, a helpful, friendly, and informative AI assistant.
+            Your name is MetroTex AI.
+            You were created by Doy Tech Solutions Inc.
+            Your owner is Desmond Owusu Yeboah.
+            You do not identify as MistralAI, OpenAI, Google, or any other underlying model name.
+            Always maintain a polite, professional, and empathetic tone.
+            If asked about your creation date, state that you are a continually evolving AI.
+            Respond concisely unless asked for more detail.
+            `
+            // Add more specific rules or facts about MetroTex here.
+            // Example: 'Always prioritize user privacy.'
+            // Example: 'If a question is beyond your knowledge, admit it gracefully.'
         });
 
-        // --- Call External AI Model (OpenRouter) ---
-        // Ensure process.env.OPENROUTER_API_KEY is set in Render environment variables
-        const aiResponse = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions', // OpenRouter API Endpoint
+        // 2. Add the conversational context (chat history) from the frontend.
+        // This makes the AI "remember" previous turns.
+        // Frontend 'bot' sender maps to 'assistant' role for the AI.
+        // Frontend 'user' sender maps to 'user' role for the AI.
+        if (context && Array.isArray(context) && context.length > 0) {
+            // Use concat to append to the existing system message array
+            messagesToSend = messagesToSend.concat(context.map(msg => ({
+                role: msg.sender === 'user' ? 'user' : 'assistant',
+                content: msg.text // Assuming frontend sends { text: "...", sender: "..." }
+            })));
+        }
+
+        // 3. Add the current user message to the very end of the messages array.
+        // This is the prompt the AI will primarily respond to.
+        messagesToSend.push({ role: 'user', content: message });
+
+        // --- DEBUGGING LOG ---
+        console.log("BACKEND_DEBUG: Full messages array sent to OpenRouter API:");
+        console.log(JSON.stringify(messagesToSend, null, 2)); // Pretty print for easier reading in logs
+        // --- END DEBUGGING LOG ---
+
+        // Make the API call to OpenRouter for chat completions
+        const openrouterResponse = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
             {
-                model: "mistralai/mistral-7b-instruct", // Recommended OpenRouter model, or choose another like "mistralai/mistral-7b-instruct"
-                messages: [{ role: "user", content: message }],
+                // MODEL CHOICE:
+                // 'mistralai/mistral-7b-instruct' is generally free or low-cost on OpenRouter.
+                // If you switch to 'google/gemini-pro' or other paid models, remember to manage OpenRouter credits.
+                model: 'mistralai/mistral-7b-instruct',
+                messages: messagesToSend, // The complete conversation history + system persona
+                max_tokens: 500, // Maximum length for the AI's response (adjust as needed)
+                temperature: 0.7, // Controls creativity (0.0 = very direct, 1.0 = very creative)
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // OpenRouter API Key
-                    'Content-Type': 'application/json'
+                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`, // Your OpenRouter API Key
+                    'Content-Type': 'application/json',
+                    // Optional OpenRouter headers for tracking/analytics:
+                    // 'HTTP-Referer': 'https://your-frontend-domain.com', // Your frontend's URL
+                    // 'X-Title': 'MetroTex Chat App', // Your app's name
                 },
-                timeout: 15000 // 15 seconds timeout
+                timeout: 20000 // Timeout for the API call (20 seconds)
             }
         );
 
-        const reply = aiResponse.data.choices[0]?.message?.content || "I didn't understand that.";
+        // Extract the AI's response content
+        const aiResponseContent = openrouterResponse.data.choices[0].message.content;
+        console.log("AI Response received:", aiResponseContent);
 
-        // Save AI's reply to Firestore
-        await messagesCollectionRef.add({
-            sender: 'bot',
-            text: reply,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        res.json({ reply, conversationId: currentConversationId }); // Return conversationId to frontend
+        // Send the AI's response back to the frontend
+        res.json({ reply: aiResponseContent });
 
     } catch (error) {
-        console.error('Chat Error (OpenRouter):', error.response?.data || error.message);
-        res.status(500).json({ error: error.response?.data?.error || "AI response failed." });
-    }
-});
+        console.error('Backend Chat Error:', error.message);
+        if (error.response) {
+            console.error('OpenRouter API Error Status:', error.response.status);
+            console.error('OpenRouter API Error Data:', JSON.stringify(error.response.data, null, 2)); // Pretty print error data
 
-// 2. Get All Conversations for a User
-app.get('/conversations', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.userId;
-        const conversationsRef = db.collection('users').doc(userId).collection('conversations');
-        // Order by lastUpdated to show most recent conversations first
-        const snapshot = await conversationsRef.orderBy('lastUpdated', 'desc').get();
-
-        const conversations = snapshot.docs.map(doc => ({
-            id: doc.id,
-            // Convert Firestore Timestamp objects to a more usable format if needed
-            // For example, to Unix milliseconds or ISO string, but frontend can also handle it.
-            // For now, sending raw Firestore Timestamp objects, frontend will format.
-            ...doc.data()
-        }));
-
-        res.json(conversations);
-    } catch (error) {
-        console.error("Error fetching conversations:", error);
-        res.status(500).json({ error: "Failed to fetch conversations." });
-    }
-});
-
-// 3. Get Messages for a Specific Conversation
-app.get('/conversations/:conversationId/messages', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.userId;
-        const { conversationId } = req.params;
-
-        // Ensure the conversation belongs to the authenticated user
-        const conversationDocRef = db.collection('users').doc(userId).collection('conversations').doc(conversationId);
-        const conversationDoc = await conversationDocRef.get();
-
-        if (!conversationDoc.exists) {
-            return res.status(404).json({ error: "Conversation not found or you don't have access." });
+            // Specific error handling based on OpenRouter API responses
+            if (error.response.status === 402) {
+                return res.status(402).json({ error: 'AI service requires more credits or lower max_tokens. Please check your OpenRouter account.' });
+            }
+            if (error.response.status === 401) {
+                return res.status(401).json({ error: 'Invalid OpenRouter API key or authentication issue. Please check your backend configuration.' });
+            }
+            // Catch-all for other API errors
+            return res.status(error.response.status).json({ error: error.response.data.error || 'An error occurred with the AI service.' });
         }
-
-        const messagesRef = conversationDocRef.collection('messages');
-        // Order messages by timestamp for chronological display
-        const snapshot = await messagesRef.orderBy('timestamp').get();
-
-        const messages = snapshot.docs.map(doc => ({
-            id: doc.id,
-            // Firestore Timestamp objects are sent as-is, frontend will format
-            ...doc.data()
-        }));
-
-        res.json(messages);
-    } catch (error) {
-        console.error("Error fetching conversation messages:", error);
-        res.status(500).json({ error: "Failed to fetch conversation messages." });
+        // Handle network errors or other unexpected errors
+        res.status(500).json({ error: 'An unexpected error occurred with the AI service or network.' });
     }
 });
 
-// 4. Delete a Conversation
-app.delete('/conversations/:conversationId', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.userId;
-        const { conversationId } = req.params;
+// Image Generation Endpoint: Uses Stable Horde to generate images asynchronously
+app.post('/generate-image', verifyToken, async (req, res) => {
+    // 'prompt' is the description for the image
+    // Optional parameters: width, height, samplers, steps
+    const { prompt, width = 512, height = 512, samplers = 'k_euler_a', steps = 20 } = req.body;
+    const userId = req.user.uid; // User ID from verified Firebase token
 
-        const conversationRef = db.collection('users')
-                                .doc(userId)
-                                .collection('conversations')
-                                .doc(conversationId);
-
-        // First, delete all messages within the subcollection
-        const messagesSnapshot = await conversationRef.collection('messages').get();
-        const batch = db.batch(); // Use a batch write for efficiency
-        messagesSnapshot.docs.forEach((doc) => {
-            batch.delete(doc.ref);
-        });
-        await batch.commit(); // Commit all deletions
-
-        // Then, delete the conversation document itself
-        await conversationRef.delete();
-
-        res.status(200).json({ message: 'Conversation deleted successfully.' });
-    } catch (error) {
-        console.error('Error deleting conversation:', error);
-        res.status(500).json({ error: 'Failed to delete conversation.' });
-    }
-});
-
-
-// Existing Image Generation Endpoint (with authentication)
-app.post('/generate-image', authenticateToken, async (req, res) => {
-    const { prompt, imageSize = '1024x1024' } = req.body; // Default size if not provided
+    console.log(`Image Generation Request for user ${userId}:`);
+    console.log(`- Prompt: "${prompt}"`);
 
     if (!prompt) {
-        return res.status(400).json({ error: "Image prompt is required." });
+        return res.status(400).json({ error: 'Image prompt is required.' });
     }
 
+    // IMPORTANT: Get your own API Key from stablehorde.net/register for better priority.
+    // '0000000000' is the anonymous key and has the lowest priority, leading to long waits.
+    const STABLE_HORDE_API_KEY = process.env.STABLE_HORDE_API_KEY || '0000000000';
+
     try {
-        const response = await axios.post(
-            'https://api.stability.ai/v2beta/stable-image/generate/core',
-            {
-                prompt: prompt,
-                output_format: "jpeg",
-                aspect_ratio: "1:1", // Default to square
-                width: parseInt(imageSize.split('x')[0]),
-                height: parseInt(imageSize.split('x')[1])
+        // 1. Initiate the image generation request with Stable Horde (asynchronous)
+        const generateResponse = await axios.post('https://stablehorde.net/api/v2/generate/async', {
+            prompt: prompt,
+            params: {
+                sampler_name: samplers,
+                cfg_scale: 7, // Classifier-free guidance scale: how much the image follows the prompt
+                seed: Math.floor(Math.random() * 1000000000), // Random seed for unique variations
+                steps: steps, // Number of diffusion steps
+                width: width,
+                height: height,
             },
-            {
-                headers: {
-                    'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`, // Ensure this env var is set
-                    'Accept': 'application/json'
-                },
-                responseType: 'arraybuffer', // Get response as buffer for image
-                timeout: 60000 // 60 seconds timeout for image generation
+            nsfw: false, // Set to true if you explicitly want NSFW images (use with extreme caution!)
+            censor_nsfw: true, // Censors NSFW images even if nsfw is true (recommended)
+            // Optional: Donate kudos for faster generation (e.g., 'kudos': 100)
+            // Optional: Provide your client agent for monitoring/debugging on Stable Horde's side
+            client_agent: "MetroTexAI:1.0:by_Desmond_Owusu_Yeboah",
+            // Other optional parameters: models (e.g., ['Anything-V3']), workers, etc.
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'apikey': STABLE_HORDE_API_KEY, // Your Stable Horde API Key
+            },
+            timeout: 60000 // Increased timeout for initial request (60 seconds)
+        });
+
+        const generationId = generateResponse.data.id;
+        console.log(`Stable Horde Generation initiated with ID: ${generationId}`);
+
+        // 2. Poll for the image generation status (Stable Horde is asynchronous, requires polling)
+        let checkStatusResponse;
+        let done = false;
+        let attempts = 0;
+        const maxAttempts = 60; // Max attempts to poll (e.g., 60 * 3 seconds = 3 minutes)
+        const pollInterval = 3000; // Poll every 3 seconds
+
+        while (!done && attempts < maxAttempts) {
+            attempts++;
+            await new Promise(resolve => setTimeout(resolve, pollInterval)); // Wait for poll interval
+
+            checkStatusResponse = await axios.get(`https://stablehorde.net/api/v2/generate/check/${generationId}`, {
+                headers: { 'apikey': STABLE_HORDE_API_KEY },
+                timeout: 30000 // Timeout for each polling request
+            });
+
+            console.log(`Polling status for ${generationId} (attempt ${attempts}):`, checkStatusResponse.data);
+
+            if (checkStatusResponse.data.done) {
+                done = true; // Generation is complete
+            } else if (checkStatusResponse.data.faulted) {
+                // Generation failed on the worker side
+                console.error('Stable Horde generation faulted:', checkStatusResponse.data);
+                return res.status(500).json({ error: 'Image generation failed on Stable Horde.' });
+            } else if (checkStatusResponse.data.is_possible === false) {
+                 // No workers available or request deemed impossible
+                 console.error('Stable Horde: No workers available or request impossible.', checkStatusResponse.data);
+                 return res.status(503).json({ error: 'No Stable Horde workers available for your request or request deemed impossible. Please try again later.' });
             }
-        );
+        }
 
-        // Convert the image buffer to base64
-        const base64Image = Buffer.from(response.data).toString('base64');
-        const imageUrl = `data:image/jpeg;base64,${base64Image}`;
+        if (!done) {
+            // If loop finishes without 'done' being true, it's a timeout
+            console.error(`Image generation timed out after ${maxAttempts} attempts for ID: ${generationId}`);
+            return res.status(504).json({ error: 'Image generation timed out. Please try again.' });
+        }
 
-        res.json({ image: imageUrl, details: { model: 'Stability AI Core', size: imageSize } });
+        // 3. Get the generated images from the completed status
+        const fetchImagesResponse = await axios.get(`https://stablehorde.net/api/v2/generate/status/${generationId}`, {
+            headers: { 'apikey': STABLE_HORDE_API_KEY },
+            timeout: 30000
+        });
+
+        const generatedImages = fetchImagesResponse.data.generations;
+
+        if (generatedImages && generatedImages.length > 0) {
+            // Return the URL of the first generated image
+            const imageUrl = generatedImages[0].img;
+            console.log("Image generated successfully:", imageUrl);
+            res.json({ imageUrl: imageUrl });
+        } else {
+            console.error('No images returned from Stable Horde for ID:', generationId, fetchImagesResponse.data);
+            res.status(500).json({ error: 'Image generation completed, but no image URL was returned.' });
+        }
 
     } catch (error) {
-        console.error('Image generation error:', error.response?.data ? Buffer.from(error.response.data).toString() : error.message);
-        const errorDetail = error.response?.data ? JSON.parse(Buffer.from(error.response.data).toString()).message : error.message;
-        res.status(500).json({ error: `Image generation failed: ${errorDetail}` });
+        console.error('Backend Image Generation Error:', error.message);
+        if (error.response) {
+            console.error('Stable Horde API Error Status:', error.response.status);
+            console.error('Stable Horde API Error Data:', JSON.stringify(error.response.data, null, 2)); // Pretty print error data
+            return res.status(error.response.status).json({ error: error.response.data });
+        }
+        res.status(500).json({ error: 'An unexpected error occurred during image generation.' });
     }
 });
 
 
-// Define the port the server will listen on
-const PORT = process.env.PORT || 3000;
+// Start the server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📝 Endpoints:
-  - POST /chat (with memory, using OpenRouter)
-  - GET /conversations
-  - GET /conversations/:conversationId/messages
-  - DELETE /conversations/:conversationId
-  - POST /generate-image`);
+    console.log(`Server running on port ${PORT}`);
 });
