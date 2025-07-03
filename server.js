@@ -208,7 +208,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
             height = 1024;
         }
 
-        const hordeResponse = await axios.post('https://stablehorde.net/api/v2/generate/sync', {
+        const hordeResponse = await axios.post('https://stablehorde.net/api/v2/generate/async', {
             prompt: prompt,
             params: {
                 width: width,
