@@ -193,8 +193,8 @@ app.post('/generate-image', verifyIdToken, async (req, res) => { // <<< verifyId
         console.log(`Attempting to generate image for prompt: "${prompt}"`);
 
         const preferredModels = [
-            "AI Scribbles",
             "SDXL",
+            "AI Scribbles",
             "Dreamshaper",
             "Deliberate",
             "stable_diffusion"
