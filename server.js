@@ -1,4 +1,4 @@
-// server.js - MetroTex AI Backend (WITH HISTORY & IMAGE STORAGE & DELETE FEATURES)
+// server.js - MetroTex AI Backend (WITH HISTORY, IMAGE STORAGE, DELETE & SMART CONVERSATION TITLES)
 
 require('dotenv').config(); // Load environment variables from .env file
 
@@ -154,20 +154,75 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         const reply = openRouterResponse.data.choices[0]?.message?.content;
 
         if (reply) {
-            // --- Save chat history to Firestore ---
-            const chatEntry = {
+            // --- NEW: Save chat history to Firestore & Handle Title Generation ---
+            let currentConversationId = conversationId;
+            let isNewConversation = false;
+            let chatEntryDocRef;
+
+            if (!currentConversationId) {
+                // This is a new conversation: generate a new document ID and use it as conversationId
+                chatEntryDocRef = db.collection('chat_entries').doc(); 
+                currentConversationId = chatEntryDocRef.id; 
+                isNewConversation = true;
+            } else {
+                // This is an ongoing conversation: create a new document for this message within the existing conversation
+                chatEntryDocRef = db.collection('chat_entries').doc(); 
+            }
+
+            const chatEntryData = {
                 userId: userId,
                 userMessage: message,
                 aiResponse: reply,
-                timestamp: admin.firestore.FieldValue.serverTimestamp(), // Firestore timestamp
-                conversationId: conversationId || db.collection('chat_entries').doc().id // Use provided or generate new ID
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                conversationId: currentConversationId, // Link to the conversation
+                title: isNewConversation ? (message.substring(0, 50) + '...') : null // Temporary title if new conversation
             };
+            await chatEntryDocRef.set(chatEntryData); // Save the new message document
 
-            await db.collection('chat_entries').add(chatEntry);
-            console.log(`Chat entry saved for user ${userId} with conversationId ${chatEntry.conversationId}`);
-            // --- END Save ---
+            console.log(`Chat entry saved for user ${userId} with conversationId ${currentConversationId}`);
 
-            res.json({ reply: reply, conversationId: chatEntry.conversationId }); // Return conversationId to frontend
+            // Asynchronously generate title ONLY if it's a new conversation
+            if (isNewConversation) {
+                const titlePromptMessages = [
+                    { role: 'system', content: 'Generate a very concise, 3-5 word title for the following conversation based on the *first* user message. Respond with ONLY the title.' },
+                    { role: 'user', content: `First message: "${message}"` }
+                ];
+                
+                // Use the same OpenRouter setup for title generation
+                axios.post(
+                    'https://openrouter.ai/api/v1/chat/completions',
+                    {
+                        model: openRouterModel, // Use the same model or 'mistralai/mistral-tiny' if available and preferred
+                        messages: titlePromptMessages,
+                        temperature: 0.5, // Lower temperature for more deterministic titles
+                    },
+                    {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                            'HTTP-Referer': 'https://metrotexonline.vercel.app', // Your app's URL
+                            'X-Title': 'MetroTex AI Title Generator' // Specific title for this AI call
+                        },
+                        timeout: 10000 // Shorter timeout for title generation
+                    }
+                ).then(async (titleResponse) => {
+                    const generatedTitle = titleResponse.data.choices[0]?.message?.content?.trim();
+                    if (generatedTitle) {
+                        // Update the specific document (which started this conversation) with the generated title
+                        await chatEntryDocRef.update({ title: generatedTitle });
+                        console.log(`Title generated for conversation ${currentConversationId}: ${generatedTitle}`);
+                    }
+                }).catch(titleError => {
+                    console.error('Error generating chat title (OpenRouter):', titleError.response?.data || titleError.message);
+                });
+            }
+            // --- END NEW: Save chat history & Title Generation ---
+
+            res.json({ 
+                reply: reply, 
+                conversationId: currentConversationId, // Return the conversation ID
+                entryId: chatEntryDocRef.id // Return the ID of the newly saved message document
+            });
         } else {
             console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
             res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
@@ -351,7 +406,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     }
 });
 
-// --- NEW: History Retrieval Endpoints (Existing) ---
+// --- History Retrieval Endpoints ---
 
 // Get Chat History
 app.get('/api/history/chats', verifyIdToken, async (req, res) => {
@@ -368,16 +423,24 @@ app.get('/api/history/chats', verifyIdToken, async (req, res) => {
         const conversations = chatHistory.reduce((acc, entry) => {
             const convId = entry.conversationId;
             if (!acc[convId]) {
-                acc[convId] = { id: convId, messages: [], createdAt: entry.timestamp };
+                acc[convId] = {
+                    id: convId,
+                    messages: [],
+                    createdAt: entry.timestamp,
+                    // Use the title from the first message of this conversation, or a default
+                    title: entry.title || `Conversation ${convId.substring(0, 8)}...` 
+                };
             }
             acc[convId].messages.push({
+                docId: entry.id, // Include Firestore document ID for individual message deletion if needed
                 userMessage: entry.userMessage,
                 aiResponse: entry.aiResponse,
                 timestamp: entry.timestamp
             });
-            // Update createdAt to the first message's timestamp if it's the beginning of the conversation
-            if (acc[convId].messages.length === 1) {
-                acc[convId].createdAt = entry.timestamp;
+            // If this is the first message for this conversation in the sorted list,
+            // make sure its title is used for the conversation.
+            if (acc[convId].messages.length === 1 && entry.title) {
+                acc[convId].title = entry.title;
             }
             return acc;
         }, {});
@@ -389,7 +452,6 @@ app.get('/api/history/chats', verifyIdToken, async (req, res) => {
             }
             return 0; // Handle cases where timestamp might be missing
         });
-
 
         console.log(`Retrieved chat history for user ${userId}: ${sortedConversations.length} conversations`);
         res.json(sortedConversations);
@@ -421,7 +483,7 @@ app.get('/api/history/images', verifyIdToken, async (req, res) => {
 });
 
 
-// --- NEW: DELETE Endpoints for History ---
+// --- DELETE Endpoints for History ---
 
 // Delete Chat Entry
 app.delete('/delete-chat-entry/:entryId', verifyIdToken, async (req, res) => {
