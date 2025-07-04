@@ -1,16 +1,18 @@
+// server.js - MetroTex AI Backend (WITH HISTORY & IMAGE STORAGE & DELETE FEATURES)
+
 require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
+const axios = require('axios'); // Used for OpenRouter and Stable Horde API calls
 const admin = require('firebase-admin'); // Firebase Admin SDK
-const { OpenAI } = require('openai'); // For OpenRouter API calls for chat and title generation
 
 const app = express();
 const PORT = process.env.PORT || 5000; // Use port from environment variable or default to 5000
 
 // --- Firebase Admin SDK Initialization ---
 let db; // Declare Firestore instance globally
+let auth; // Declare Auth instance globally
 
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -20,9 +22,11 @@ try {
         });
         console.log('Firebase Admin SDK initialized using environment variable.');
     } else if (process.env.NODE_ENV !== 'production') {
-        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json';
+        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; 
         try {
-            const serviceAccount = require(serviceAccountPath);
+            // Note: In production, it's best to always use FIREBASE_SERVICE_ACCOUNT_KEY environment variable.
+            // This 'require' should point to your actual local service account file if you use it in dev.
+            const serviceAccount = require(serviceAccountPath); 
             admin.initializeApp({
                 credential: admin.credential.cert(serviceAccount)
             });
@@ -37,21 +41,12 @@ try {
         process.exit(1);
     }
     db = admin.firestore(); // Initialize Firestore instance AFTER Firebase app is initialized
-    console.log('Firebase Firestore initialized.');
+    auth = admin.auth(); // Initialize Auth instance
+    console.log('Firebase Firestore and Auth initialized.');
 } catch (error) {
     console.error('Firebase initialization failed:', error);
     process.exit(1);
 }
-
-// --- OpenAI (OpenRouter) configuration ---
-const openai = new OpenAI({
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.OPENROUTER_API_KEY,
-    defaultHeaders: {
-        "HTTP-Referer": "https://metrotexonline.vercel.app", // Replace with your actual frontend URL
-        "X-Title": "MetroTex AI",
-    },
-});
 
 // --- Middleware to Verify Firebase ID Token ---
 const verifyIdToken = async (req, res, next) => {
@@ -64,7 +59,7 @@ const verifyIdToken = async (req, res, next) => {
     const idToken = authHeader.split('Bearer ')[1];
 
     try {
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const decodedToken = await auth.verifyIdToken(idToken); // Use the initialized auth instance
         req.user = decodedToken; // Attach decoded token to request (contains uid)
         next();
     } catch (error) {
@@ -92,34 +87,12 @@ app.use(cors({
         }
         return callback(null, true);
     },
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE', // Ensure DELETE method is allowed
     credentials: true,
     optionsSuccessStatus: 204
 }));
 
 app.use(express.json()); // Body parser for JSON requests
-
-// --- Helper function for batch deleting documents by query (used for chat conversations) ---
-async function deleteCollection(collectionRef, query, batchSize = 100) {
-    const snapshot = await query.get();
-
-    if (snapshot.size === 0) {
-        return; // No documents to delete
-    }
-
-    const batch = db.batch();
-    snapshot.docs.forEach(doc => {
-        batch.delete(doc.ref);
-    });
-
-    await batch.commit();
-
-    // Recursively call for the next batch if there are more documents than batchSize
-    // This is important for conversations with many messages
-    if (snapshot.size === batchSize) {
-        return deleteCollection(collectionRef, query, batchSize);
-    }
-}
 
 // --- Basic Route ---
 app.get('/', (req, res) => {
@@ -128,7 +101,7 @@ app.get('/', (req, res) => {
 
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
-    const { message, context, conversationId: clientConversationId } = req.body; // Added conversationId from frontend
+    const { message, context, conversationId } = req.body; // Added conversationId from frontend
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
@@ -140,18 +113,6 @@ app.post('/chat', verifyIdToken, async (req, res) => {
     }
 
     const userId = req.user.uid; // Get user ID from authenticated token
-    let conversationId = clientConversationId;
-    let isNewConversation = false;
-
-    // If no conversationId is provided by the client, generate a new one
-    if (!conversationId) {
-        conversationId = db.collection('chat_entries').doc().id; // Generate a new UUID
-        isNewConversation = true;
-        console.log(`Starting new conversation with ID: ${conversationId} for user ${userId}`);
-    } else {
-        console.log(`Continuing conversation ID: ${conversationId} for user ${userId}`);
-    }
-
 
     try {
         const systemPersona = {
@@ -168,60 +129,45 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         });
         messagesForOpenRouter.push({ role: 'user', content: message });
 
-        const openRouterChatModel = process.env.OPENROUTER_CHAT_MODEL || 'google/gemini-pro'; // Changed default to Gemini Pro
+        const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
 
-        console.log(`Sending chat request to OpenRouter model: ${openRouterChatModel}`);
+        console.log(`Sending chat request to OpenRouter model: ${openRouterModel}`);
 
-        const openRouterResponse = await openai.chat.completions.create({
-            model: openRouterChatModel,
-            messages: messagesForOpenRouter,
-            temperature: 0.7,
-        });
+        const openRouterResponse = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+                model: openRouterModel,
+                messages: messagesForOpenRouter,
+                temperature: 0.7,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                    'HTTP-Referer': 'https://metrotexonline.vercel.app',
+                    'X-Title': 'MetroTex AI'
+                },
+                timeout: 30000
+            }
+        );
 
-        const reply = openRouterResponse.choices[0]?.message?.content;
+        const reply = openRouterResponse.data.choices[0]?.message?.content;
 
         if (reply) {
+            // --- Save chat history to Firestore ---
             const chatEntry = {
                 userId: userId,
                 userMessage: message,
                 aiResponse: reply,
                 timestamp: admin.firestore.FieldValue.serverTimestamp(), // Firestore timestamp
-                conversationId: conversationId,
-                // title will be added below if isNewConversation
+                conversationId: conversationId || db.collection('chat_entries').doc().id // Use provided or generate new ID
             };
 
-            const docRef = await db.collection('chat_entries').add(chatEntry); // Save the entry
+            await db.collection('chat_entries').add(chatEntry);
+            console.log(`Chat entry saved for user ${userId} with conversationId ${chatEntry.conversationId}`);
+            // --- END Save ---
 
-            // --- NEW: Generate title for new conversations ---
-            if (isNewConversation) {
-                try {
-                    // Use a lighter/faster model for title generation
-                    const titleModel = process.env.OPENROUTER_TITLE_MODEL || 'google/gemma-7b-it';
-                    const titlePrompt = `Summarize this first chat exchange into a very concise, descriptive title (5-10 words). Focus on the main topic. Examples: "User asks about history", "Problem with software install", "Creative writing prompt".\n\nUser: "${message}"\nAI: "${reply}"\n\nTitle:`;
-
-                    const titleCompletion = await openai.chat.completions.create({
-                        model: titleModel,
-                        messages: [{ role: 'user', content: titlePrompt }],
-                        max_tokens: 20, // Keep title short
-                        temperature: 0.5,
-                    });
-                    let generatedTitle = titleCompletion.choices[0]?.message?.content?.trim();
-
-                    // Clean up potential unwanted characters/phrases from the title
-                    generatedTitle = generatedTitle.replace(/^Title:\s*/i, ''); // Remove "Title: " prefix
-                    generatedTitle = generatedTitle.replace(/^"|"$/g, ''); // Remove surrounding quotes
-
-                    await docRef.update({ title: generatedTitle });
-                    console.log(`Generated title for new conversation ${conversationId}: "${generatedTitle}"`);
-                } catch (titleError) {
-                    console.error("Error generating conversation title:", titleError.message);
-                    // If title generation fails, update with a default title
-                    await docRef.update({ title: `Untitled Conversation ${conversationId.substring(0, 8)}` });
-                }
-            }
-            // --- END NEW ---
-
-            res.json({ reply: reply, conversationId: conversationId }); // Return conversationId to frontend
+            res.json({ reply: reply, conversationId: chatEntry.conversationId }); // Return conversationId to frontend
         } else {
             console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
             res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
@@ -312,23 +258,23 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
                 jobId = initiateResponse.data.id;
                 finalModelUsed = initiateResponse.data.model || modelsToTry[0];
                 generationWarning = (initiateResponse.data.warnings && initiateResponse.data.warnings.some(w => w.code === 'NoAvailableWorker')) ?
-                    (initiateResponse.data.message || 'No available workers for these models/size.') : null;
+                                    (initiateResponse.data.message || 'No available workers for these models/size.') : null;
 
                 if (generationWarning) {
                     console.warn(`Stable Horde initiation warning for models [${modelsToTry.join(', ')}]: ${generationWarning}`);
                     jobId = null;
-                    continue;
+                    continue; // Try next model group
                 }
 
                 if (jobId) {
                     console.log(`Stable Horde generation initiated with model(s) [${finalModelUsed}]. Job ID: ${jobId}`);
-                    break;
+                    break; // Job initiated, exit loop
                 }
 
             } catch (initiateError) {
                 console.error(`Error initiating with models [${modelsToTry.join(', ')}]:`, initiateError.response?.data || initiateError.message);
                 if (initiateError.response?.status === 400) {
-                    return res.status(400).json({ error: `Stable Horde Bad Request: ${initiateError.response.data.message || 'Check prompt or parameters.'}` });
+                     return res.status(400).json({ error: `Stable Horde Bad Request: ${initiateError.response.data.message || 'Check prompt or parameters.'}` });
                 }
             }
         }
@@ -340,7 +286,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
         let imageUrl = null;
         let attempts = 0;
-        const maxAttempts = 45;
+        const maxAttempts = 45; // Max 45 * 2 seconds = 90 seconds
         const pollInterval = 2000;
 
         while (!imageUrl && attempts < maxAttempts) {
@@ -381,7 +327,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
             await db.collection('image_generations').add(imageGenerationEntry);
             console.log(`Image generation entry saved for user ${userId}`);
-            // --- END NEW ---
+            // --- END Save ---
 
             res.json({ imageUrl: imageUrl, model: finalModelUsed });
         } else {
@@ -405,48 +351,43 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     }
 });
 
-// --- History Retrieval Endpoints ---
+// --- NEW: History Retrieval Endpoints (Existing) ---
 
 // Get Chat History
 app.get('/api/history/chats', verifyIdToken, async (req, res) => {
     const userId = req.user.uid;
     try {
         const chatEntriesRef = db.collection('chat_entries')
-            .where('userId', '==', userId)
-            .orderBy('timestamp', 'asc'); // Order by oldest first
+                                  .where('userId', '==', userId)
+                                  .orderBy('timestamp', 'asc'); // Order by oldest first
 
         const snapshot = await chatEntriesRef.get();
         const chatHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        // Group messages by conversationId and use the stored title
+        // Group messages by conversationId for better display on frontend
         const conversations = chatHistory.reduce((acc, entry) => {
             const convId = entry.conversationId;
             if (!acc[convId]) {
-                acc[convId] = {
-                    id: convId,
-                    messages: [],
-                    createdAt: entry.timestamp, // Use first message timestamp as conversation start
-                    title: entry.title || `Untitled Conversation ${convId.substring(0, 8)}` // Use generated title or fallback
-                };
+                acc[convId] = { id: convId, messages: [], createdAt: entry.timestamp };
             }
             acc[convId].messages.push({
                 userMessage: entry.userMessage,
                 aiResponse: entry.aiResponse,
                 timestamp: entry.timestamp
             });
-            // Ensure createdAt is always the earliest for the conversation
-            if (entry.timestamp.toDate().getTime() < acc[convId].createdAt.toDate().getTime()) {
+            // Update createdAt to the first message's timestamp if it's the beginning of the conversation
+            if (acc[convId].messages.length === 1) {
                 acc[convId].createdAt = entry.timestamp;
             }
             return acc;
         }, {});
 
-        // Convert object back to array and sort by conversation createdAt (newest first for history display)
+        // Convert object back to array and sort by conversation createdAt
         const sortedConversations = Object.values(conversations).sort((a, b) => {
             if (a.createdAt && b.createdAt) {
-                return b.createdAt.toDate().getTime() - a.createdAt.toDate().getTime(); // Newest first
+                return a.createdAt.toDate().getTime() - b.createdAt.toDate().getTime();
             }
-            return 0;
+            return 0; // Handle cases where timestamp might be missing
         });
 
 
@@ -464,8 +405,8 @@ app.get('/api/history/images', verifyIdToken, async (req, res) => {
     const userId = req.user.uid;
     try {
         const imageGenerationsRef = db.collection('image_generations')
-            .where('userId', '==', userId)
-            .orderBy('timestamp', 'desc'); // Order by newest first
+                                       .where('userId', '==', userId)
+                                       .orderBy('timestamp', 'desc'); // Order by newest first
 
         const snapshot = await imageGenerationsRef.get();
         const imageHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -479,59 +420,64 @@ app.get('/api/history/images', verifyIdToken, async (req, res) => {
     }
 });
 
-// --- NEW: Deletion Endpoints ---
 
-// DELETE Chat Conversation (all messages in a conversation)
-app.delete('/api/history/chats/:conversationId', verifyIdToken, async (req, res) => {
-    const { conversationId } = req.params;
+// --- NEW: DELETE Endpoints for History ---
+
+// Delete Chat Entry
+app.delete('/delete-chat-entry/:entryId', verifyIdToken, async (req, res) => {
+    const { entryId } = req.params;
     const userId = req.user.uid;
 
     try {
-        const chatEntriesToDeleteRef = db.collection('chat_entries')
-            .where('conversationId', '==', conversationId)
-            .where('userId', '==', userId); // Ensure user owns the conversation
+        const chatDocRef = db.collection('chat_entries').doc(entryId);
+        const chatDoc = await chatDocRef.get();
 
-        const snapshot = await chatEntriesToDeleteRef.get();
-
-        if (snapshot.empty) {
-            return res.status(404).json({ error: 'Conversation not found or you do not have permission to delete it.' });
+        if (!chatDoc.exists) {
+            console.warn(`Attempted to delete non-existent chat entry: ${entryId}`);
+            return res.status(404).json({ error: 'Chat entry not found.' });
         }
 
-        await deleteCollection(db.collection('chat_entries'), chatEntriesToDeleteRef); // Use the helper
-        console.log(`Conversation ${conversationId} and all its entries deleted by user ${userId}.`);
-        res.status(200).json({ message: 'Conversation deleted successfully.' });
+        // Ensure the authenticated user is the owner of the chat entry
+        if (chatDoc.data().userId !== userId) {
+            console.warn(`Unauthorized attempt to delete chat entry ${entryId} by user ${userId}. Owner: ${chatDoc.data().userId}`);
+            return res.status(403).json({ error: 'Forbidden: You do not own this chat entry.' });
+        }
 
+        await chatDocRef.delete();
+        console.log(`Chat entry ${entryId} deleted by user ${userId}.`);
+        res.status(200).json({ message: 'Chat entry deleted successfully.' });
     } catch (error) {
-        console.error(`Error deleting chat conversation ${conversationId}:`, error.message);
-        res.status(500).json({ error: 'Failed to delete conversation.' });
+        console.error(`Error deleting chat entry ${entryId}:`, error);
+        res.status(500).json({ error: 'Failed to delete chat entry.' });
     }
 });
 
-// DELETE Image Generation
-app.delete('/api/history/images/:imageId', verifyIdToken, async (req, res) => {
-    const { imageId } = req.params;
+// Delete Image Entry
+app.delete('/delete-image-entry/:entryId', verifyIdToken, async (req, res) => {
+    const { entryId } = req.params;
     const userId = req.user.uid;
 
     try {
-        const imageDocRef = db.collection('image_generations').doc(imageId);
+        const imageDocRef = db.collection('image_generations').doc(entryId);
         const imageDoc = await imageDocRef.get();
 
         if (!imageDoc.exists) {
-            return res.status(404).json({ error: 'Image not found.' });
+            console.warn(`Attempted to delete non-existent image entry: ${entryId}`);
+            return res.status(404).json({ error: 'Image entry not found.' });
         }
 
-        // Ensure the current user owns this image before deleting
+        // Ensure the authenticated user is the owner of the image entry
         if (imageDoc.data().userId !== userId) {
-            return res.status(403).json({ error: 'Forbidden: You do not have permission to delete this image.' });
+            console.warn(`Unauthorized attempt to delete image entry ${entryId} by user ${userId}. Owner: ${imageDoc.data().userId}`);
+            return res.status(403).json({ error: 'Forbidden: You do not own this image entry.' });
         }
 
         await imageDocRef.delete();
-        console.log(`Image ${imageId} deleted by user ${userId}.`);
-        res.status(200).json({ message: 'Image deleted successfully.' });
-
+        console.log(`Image entry ${entryId} deleted by user ${userId}.`);
+        res.status(200).json({ message: 'Image entry deleted successfully.' });
     } catch (error) {
-        console.error(`Error deleting image ${imageId}:`, error.message);
-        res.status(500).json({ error: 'Failed to delete image.' });
+        console.error(`Error deleting image entry ${entryId}:`, error);
+        res.status(500).json({ error: 'Failed to delete image entry.' });
     }
 });
 
