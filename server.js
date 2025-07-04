@@ -279,7 +279,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         }
 
         const modelGroups = [
-            ["stable_diffusion", "Deliberate", "Anything-V3", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated", "AbyssOrangeMix2"],
+            ["Realistic Vision", "AbsoluteReality",  "Deliberate", "Anything-V3", "Dreamlike Diffusion", "ChilloutMix", "RevAnimated", "AbyssOrangeMix2"],
         ];
 
         let jobId = null;
