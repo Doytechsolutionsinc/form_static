@@ -15,13 +15,17 @@ let db; // Declare Firestore instance globally
 
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        // In production, use the environment variable which holds the JSON string
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
         console.log('Firebase Admin SDK initialized using environment variable.');
     } else if (process.env.NODE_ENV !== 'production') {
-        const serviceAccountPath = './metrotex-ai-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; 
+        // In development, you can use a local file.
+        // IMPORTANT: Update this path to your actual service account key filename.
+        // And remember to add this file to your .gitignore!
+        const serviceAccountPath = './metrotex-ai-d3b79-firebase-adminsdk-xxxxx-xxxxxxxxxx.json'; // <<<< UPDATE THIS FILENAME
         try {
             const serviceAccount = require(serviceAccountPath);
             admin.initializeApp({
@@ -30,26 +34,26 @@ try {
             console.log('Firebase Admin SDK initialized using local file path (development).');
         } catch (error) {
             console.error('ERROR: Firebase service account file not found locally:', serviceAccountPath);
-            console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set in production, or the local file exists.');
-            process.exit(1);
+            console.error('Please ensure FIREBASE_SERVICE_ACCOUNT_KEY environment variable is set in production, or the local file exists in development.');
+            process.exit(1); // Exit if critical Firebase setup fails
         }
     } else {
         console.error('ERROR: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK not initialized.');
-        process.exit(1);
+        process.exit(1); // Exit if critical Firebase setup fails
     }
     db = admin.firestore(); // Initialize Firestore instance AFTER Firebase app is initialized
     console.log('Firebase Firestore initialized.');
 } catch (error) {
     console.error('Firebase initialization failed:', error);
-    process.exit(1);
+    process.exit(1); // Ensure server doesn't start if Firebase fails
 }
 
-// --- Middleware to Verify Firebase ID Token ---
+// --- Middleware to Verify Firebase ID Token (User Authentication) ---
 const verifyIdToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         console.warn('Authentication: No token provided or invalid format.');
-        return res.status(401).json({ error: 'Unauthorized: No token provided.' });
+        return res.status(401).json({ error: 'Unauthorized: No ID token provided.' });
     }
 
     const idToken = authHeader.split('Bearer ')[1];
@@ -57,13 +61,34 @@ const verifyIdToken = async (req, res, next) => {
     try {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         req.user = decodedToken; // Attach decoded token to request (contains uid)
-        next();
+        next(); // Proceed if ID token is valid
     } catch (error) {
-        console.error('Authentication Error:', error.message);
+        console.error('Authentication Error (verifyIdToken):', error.message);
         if (error.code === 'auth/id-token-expired') {
-            return res.status(401).json({ error: 'Unauthorized: Token expired. Please log in again.' });
+            return res.status(401).json({ error: 'Unauthorized: Session expired. Please log in again.' });
         }
-        return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
+        return res.status(401).json({ error: 'Unauthorized: Invalid ID token.' });
+    }
+};
+
+// --- NEW: Middleware to Verify Firebase App Check Token (App Authenticity) ---
+const verifyAppCheck = async (req, res, next) => {
+    const appCheckToken = req.header('X-Firebase-AppCheck');
+
+    if (!appCheckToken) {
+        console.warn('App Check: Token not found in request headers. Request blocked.');
+        return res.status(401).json({ error: 'Unauthorized: App Check token missing.' });
+    }
+
+    try {
+        await admin.appCheck().verifyToken(appCheckToken);
+        console.log('App Check: Token verified successfully.');
+        next(); // Proceed if App Check token is valid
+    } catch (error) {
+        console.error('App Check Error (verifyAppCheck):', error.message);
+        // Firebase App Check automatically uses reCAPTCHA Enterprise verification when configured
+        // The error codes can give more specific info, but a generic 401 is usually fine for clients.
+        return res.status(401).json({ error: 'Unauthorized: App Check verification failed.' });
     }
 };
 
@@ -85,6 +110,7 @@ app.use(cors({
     },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'], // Allow App Check header
     optionsSuccessStatus: 204
 }));
 
@@ -96,8 +122,9 @@ app.get('/', (req, res) => {
 });
 
 // --- AI Chat Endpoint ---
-app.post('/chat', verifyIdToken, async (req, res) => {
-    const { message, context, conversationId } = req.body; // Added conversationId from frontend
+// Apply both verifyIdToken and verifyAppCheck middlewares
+app.post('/chat', verifyIdToken, verifyAppCheck, async (req, res) => {
+    const { message, context, conversationId } = req.body;
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
@@ -108,7 +135,7 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         return res.status(500).json({ error: 'Server configuration error: OpenRouter API key missing.' });
     }
 
-    const userId = req.user.uid; // Get user ID from authenticated token
+    const userId = req.user.uid;
 
     try {
         const systemPersona = {
@@ -117,12 +144,15 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         };
 
         const messagesForOpenRouter = [systemPersona];
-        context.forEach(msg => {
-            messagesForOpenRouter.push({
-                role: msg.role === 'user' ? 'user' : 'assistant',
-                content: msg.content
+        // Ensure context is an array before iterating
+        if (Array.isArray(context)) {
+            context.forEach(msg => {
+                messagesForOpenRouter.push({
+                    role: msg.role === 'user' ? 'user' : 'assistant',
+                    content: msg.content
+                });
             });
-        });
+        }
         messagesForOpenRouter.push({ role: 'user', content: message });
 
         const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
@@ -150,20 +180,18 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         const reply = openRouterResponse.data.choices[0]?.message?.content;
 
         if (reply) {
-            // --- NEW: Save chat history to Firestore ---
             const chatEntry = {
                 userId: userId,
                 userMessage: message,
                 aiResponse: reply,
-                timestamp: admin.firestore.FieldValue.serverTimestamp(), // Firestore timestamp
-                conversationId: conversationId || db.collection('chat_entries').doc().id // Use provided or generate new ID
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                conversationId: conversationId || db.collection('chat_entries').doc().id
             };
 
             await db.collection('chat_entries').add(chatEntry);
             console.log(`Chat entry saved for user ${userId} with conversationId ${chatEntry.conversationId}`);
-            // --- END NEW ---
 
-            res.json({ reply: reply, conversationId: chatEntry.conversationId }); // Return conversationId to frontend
+            res.json({ reply: reply, conversationId: chatEntry.conversationId });
         } else {
             console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
             res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
@@ -186,7 +214,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
 });
 
 // --- Image Generation Endpoint ---
-app.post('/generate-image', verifyIdToken, async (req, res) => {
+// Apply both verifyIdToken and verifyAppCheck middlewares
+app.post('/generate-image', verifyIdToken, verifyAppCheck, async (req, res) => {
     console.log('--- DEBUG: Image generation endpoint hit! ---');
     console.log('--- DEBUG: Request body:', req.body);
 
@@ -203,7 +232,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         return res.status(500).json({ error: 'Server configuration error: Image generation key missing.' });
     }
 
-    const userId = req.user.uid; // Get user ID from authenticated token
+    const userId = req.user.uid;
 
     try {
         console.log(`Attempting to initiate image generation for prompt: "${prompt}"`);
@@ -258,7 +287,7 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
                 if (generationWarning) {
                     console.warn(`Stable Horde initiation warning for models [${modelsToTry.join(', ')}]: ${generationWarning}`);
-                    jobId = null;
+                    jobId = null; // Reset jobId to try next model group
                     continue;
                 }
 
@@ -311,7 +340,6 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         }
 
         if (imageUrl) {
-            // --- NEW: Save image generation history to Firestore ---
             const imageGenerationEntry = {
                 userId: userId,
                 prompt: prompt,
@@ -323,7 +351,6 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
 
             await db.collection('image_generations').add(imageGenerationEntry);
             console.log(`Image generation entry saved for user ${userId}`);
-            // --- END NEW ---
 
             res.json({ imageUrl: imageUrl, model: finalModelUsed });
         } else {
@@ -347,20 +374,19 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
     }
 });
 
-// --- NEW: History Retrieval Endpoints ---
+// --- History Retrieval Endpoints ---
 
-// Get Chat History
-app.get('/api/history/chats', verifyIdToken, async (req, res) => {
+// Get Chat History - Protected by both ID token and App Check token
+app.get('/api/history/chats', verifyIdToken, verifyAppCheck, async (req, res) => {
     const userId = req.user.uid;
     try {
         const chatEntriesRef = db.collection('chat_entries')
                                   .where('userId', '==', userId)
-                                  .orderBy('timestamp', 'asc'); // Order by oldest first
+                                  .orderBy('timestamp', 'asc');
 
         const snapshot = await chatEntriesRef.get();
         const chatHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        // Group messages by conversationId for better display on frontend
         const conversations = chatHistory.reduce((acc, entry) => {
             const convId = entry.conversationId;
             if (!acc[convId]) {
@@ -371,21 +397,18 @@ app.get('/api/history/chats', verifyIdToken, async (req, res) => {
                 aiResponse: entry.aiResponse,
                 timestamp: entry.timestamp
             });
-            // Update createdAt to the first message's timestamp if it's the beginning of the conversation
             if (acc[convId].messages.length === 1) {
                 acc[convId].createdAt = entry.timestamp;
             }
             return acc;
         }, {});
 
-        // Convert object back to array and sort by conversation createdAt
         const sortedConversations = Object.values(conversations).sort((a, b) => {
             if (a.createdAt && b.createdAt) {
                 return a.createdAt.toDate().getTime() - b.createdAt.toDate().getTime();
             }
-            return 0; // Handle cases where timestamp might be missing
+            return 0;
         });
-
 
         console.log(`Retrieved chat history for user ${userId}: ${sortedConversations.length} conversations`);
         res.json(sortedConversations);
@@ -396,13 +419,13 @@ app.get('/api/history/chats', verifyIdToken, async (req, res) => {
     }
 });
 
-// Get Image Generation History
-app.get('/api/history/images', verifyIdToken, async (req, res) => {
+// Get Image Generation History - Protected by both ID token and App Check token
+app.get('/api/history/images', verifyIdToken, verifyAppCheck, async (req, res) => {
     const userId = req.user.uid;
     try {
         const imageGenerationsRef = db.collection('image_generations')
                                        .where('userId', '==', userId)
-                                       .orderBy('timestamp', 'desc'); // Order by newest first
+                                       .orderBy('timestamp', 'desc');
 
         const snapshot = await imageGenerationsRef.get();
         const imageHistory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
