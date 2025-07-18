@@ -4,7 +4,7 @@ require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios'); // Used for OpenRouter and Stable Horde API calls
+const axios = require('axios'); // Used for Gemini and Stable Horde API calls
 const admin = require('firebase-admin'); // Firebase Admin SDK
 
 const app = express();
@@ -107,51 +107,74 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         return res.status(400).json({ error: 'Message is required.' });
     }
 
-    if (!process.env.OPENROUTER_API_KEY) {
-        console.error('OPENROUTER_API_KEY is not set in environment variables.');
-        return res.status(500).json({ error: 'Server configuration error: OpenRouter API key missing.' });
+    if (!process.env.GEMINI_API_KEY) {
+        console.error('GEMINI_API_KEY is not set in environment variables.');
+        return res.status(500).json({ error: 'Server configuration error: Gemini API key missing.' });
     }
 
     const userId = req.user.uid; // Get user ID from authenticated token
 
     try {
         const systemPersona = {
-            role: 'system',
-            content: 'You are MetroTex, an AI assistant developed by Doy Tech Solutions Inc. Always introduce yourself as MetroTex, and mention Doy Tech Solutions Inc. when appropriate or asked about your origin. Keep responses concise unless detailed information is explicitly requested. Be helpful and professional.'
+            role: 'user',
+            parts: [{ text: 'You are MetroTex, an AI assistant developed by Doy Tech Solutions Inc. Always introduce yourself as MetroTex, and mention Doy Tech Solutions Inc. when appropriate or asked about your origin. Keep responses concise unless detailed information is explicitly requested. Be helpful and professional.' }]
         };
 
-        const messagesForOpenRouter = [systemPersona];
+        // Convert context to Gemini format
+        const messagesForGemini = [systemPersona];
         context.forEach(msg => {
-            messagesForOpenRouter.push({
-                role: msg.role === 'user' ? 'user' : 'assistant',
-                content: msg.content
+            messagesForGemini.push({
+                role: msg.role === 'user' ? 'user' : 'model',
+                parts: [{ text: msg.content }]
             });
         });
-        messagesForOpenRouter.push({ role: 'user', content: message });
+        messagesForGemini.push({ 
+            role: 'user', 
+            parts: [{ text: message }] 
+        });
 
-        const openRouterModel = process.env.OPENROUTER_CHAT_MODEL || 'mistralai/mistral-7b-instruct-v0.2';
+        const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
-        console.log(`Sending chat request to OpenRouter model: ${openRouterModel}`);
+        console.log(`Sending chat request to Gemini model: ${geminiModel}`);
 
-        const openRouterResponse = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions',
+        const geminiResponse = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GEMINI_API_KEY}`,
             {
-                model: openRouterModel,
-                messages: messagesForOpenRouter,
-                temperature: 0.7,
+                contents: messagesForGemini,
+                generationConfig: {
+                    temperature: 0.7,
+                    topK: 40,
+                    topP: 0.95,
+                    maxOutputTokens: 2048,
+                },
+                safetySettings: [
+                    {
+                        category: "HARM_CATEGORY_HARASSMENT",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    },
+                    {
+                        category: "HARM_CATEGORY_HATE_SPEECH",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    },
+                    {
+                        category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    },
+                    {
+                        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    }
+                ]
             },
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                    'HTTP-Referer': 'https://metrotexonline.vercel.app',
-                    'X-Title': 'MetroTex AI'
                 },
                 timeout: 30000
             }
         );
 
-        const reply = openRouterResponse.data.choices[0]?.message?.content;
+        const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (reply) {
             // --- NEW: Save chat history to Firestore & Handle Title Generation ---
@@ -184,36 +207,47 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             // Asynchronously generate title ONLY if it's a new conversation
             if (isNewConversation) {
                 const titlePromptMessages = [
-                    { role: 'system', content: 'Generate a very concise, 3-5 word title for the following conversation based on the *first* user message. Respond with ONLY the title.' },
-                    { role: 'user', content: `First message: "${message}"` }
+                    {
+                        role: 'user',
+                        parts: [{ text: 'Generate a very concise, 3-5 word title for the following conversation based on the *first* user message. Respond with ONLY the title.' }]
+                    },
+                    {
+                        role: 'model',
+                        parts: [{ text: 'I understand. I will generate a concise title based on the first user message.' }]
+                    },
+                    {
+                        role: 'user',
+                        parts: [{ text: `First message: "${message}"` }]
+                    }
                 ];
                 
-                // Use the same OpenRouter setup for title generation
+                // Use Gemini for title generation
                 axios.post(
-                    'https://openrouter.ai/api/v1/chat/completions',
+                    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GEMINI_API_KEY}`,
                     {
-                        model: openRouterModel, // Use the same model or 'mistralai/mistral-tiny' if available and preferred
-                        messages: titlePromptMessages,
-                        temperature: 0.5, // Lower temperature for more deterministic titles
+                        contents: titlePromptMessages,
+                        generationConfig: {
+                            temperature: 0.5, // Lower temperature for more deterministic titles
+                            topK: 20,
+                            topP: 0.8,
+                            maxOutputTokens: 50,
+                        }
                     },
                     {
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                            'HTTP-Referer': 'https://metrotexonline.vercel.app', // Your app's URL
-                            'X-Title': 'MetroTex AI Title Generator' // Specific title for this AI call
                         },
                         timeout: 10000 // Shorter timeout for title generation
                     }
                 ).then(async (titleResponse) => {
-                    const generatedTitle = titleResponse.data.choices[0]?.message?.content?.trim();
+                    const generatedTitle = titleResponse.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
                     if (generatedTitle) {
                         // Update the specific document (which started this conversation) with the generated title
                         await chatEntryDocRef.update({ title: generatedTitle });
                         console.log(`Title generated for conversation ${currentConversationId}: ${generatedTitle}`);
                     }
                 }).catch(titleError => {
-                    console.error('Error generating chat title (OpenRouter):', titleError.response?.data || titleError.message);
+                    console.error('Error generating chat title (Gemini):', titleError.response?.data || titleError.message);
                 });
             }
             // --- END NEW: Save chat history & Title Generation ---
@@ -224,21 +258,21 @@ app.post('/chat', verifyIdToken, async (req, res) => {
                 entryId: chatEntryDocRef.id // Return the ID of the newly saved message document
             });
         } else {
-            console.warn('OpenRouter API did not return a valid reply:', openRouterResponse.data);
-            res.status(500).json({ error: "Sorry, I couldn't generate a response from OpenRouter. Please try again." });
+            console.warn('Gemini API did not return a valid reply:', geminiResponse.data);
+            res.status(500).json({ error: "Sorry, I couldn't generate a response from Gemini. Please try again." });
         }
 
     } catch (error) {
-        console.error('Error calling OpenRouter API or saving chat:', error.response?.data || error.message);
-        let errorMessage = 'Failed to get response from AI (OpenRouter). Please try again.';
+        console.error('Error calling Gemini API or saving chat:', error.response?.data || error.message);
+        let errorMessage = 'Failed to get response from AI (Gemini). Please try again.';
         if (error.response && error.response.data) {
             if (error.response.data.error && error.response.data.error.message) {
-                errorMessage = `AI Error (OpenRouter): ${error.response.data.error.message}`;
+                errorMessage = `AI Error (Gemini): ${error.response.data.error.message}`;
             } else if (error.response.data.message) {
-                errorMessage = `AI Error (OpenRouter): ${error.response.data.message}`;
+                errorMessage = `AI Error (Gemini): ${error.response.data.message}`;
             }
         } else if (error.code === 'ECONNABORTED') {
-            errorMessage = 'AI response timed out (OpenRouter). Please try again or simplify your message.';
+            errorMessage = 'AI response timed out (Gemini). Please try again or simplify your message.';
         }
         res.status(500).json({ error: errorMessage });
     }
