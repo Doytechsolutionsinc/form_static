@@ -176,14 +176,24 @@ app.post('/chat', verifyIdToken, async (req, res) => {
 
     try {
         let searchContext = null;
+        let forceSearch = false;
         if (isCurrentEventQuery(message)) {
             searchContext = await googleSearch(message);
+            forceSearch = !!searchContext;
         }
-        const systemPersona = {
-            role: 'user',
-            parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊\n\nIMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!\n\nWhen someone asks "How are you?" or similar, you MUST respond with:\n"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"\n\nWhen someone asks what you can help with, you MUST respond with:\n"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"\n\nNEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!\n\nYou are developed by Doy Tech Solutions Inc.` }]
-        };
-
+        // Strong system prompt if using search
+        let systemPersona;
+        if (forceSearch) {
+            systemPersona = {
+                role: 'user',
+                parts: [{ text: `IMPORTANT: ONLY use the following search results to answer the user's question. If the answer is not in the search results, say "I don't know based on the latest search results." Do NOT use your own knowledge.\n\nSearch Results:\n${searchContext}` }]
+            };
+        } else {
+            systemPersona = {
+                role: 'user',
+                parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊\n\nIMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!\n\nWhen someone asks "How are you?" or similar, you MUST respond with:\n"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"\n\nWhen someone asks what you can help with, you MUST respond with:\n"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"\n\nNEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!\n\nYou are developed by Doy Tech Solutions Inc.` }]
+            };
+        }
         // Convert context to Gemini format
         const messagesForGemini = [systemPersona];
         context.forEach(msg => {
@@ -196,18 +206,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             role: 'user', 
             parts: [{ text: message }] 
         });
-        // If search context, add as system message
-        if (searchContext) {
-            messagesForGemini.push({
-                role: 'user',
-                parts: [{ text: `Here are some recent search results that may help you answer the user's question:\n${searchContext}` }]
-            });
-        }
-
         const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
-
         console.log(`Sending chat request to Gemini model: ${geminiModel}`);
-
         const geminiResponse = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GEMINI_API_KEY}`,
             {
@@ -244,9 +244,7 @@ app.post('/chat', verifyIdToken, async (req, res) => {
                 timeout: 30000
             }
         );
-
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
-
         // --- POST-PROCESSING: Make response more friendly ---
         const friendlyReply = makeFriendly(reply);
 
