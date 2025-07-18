@@ -113,7 +113,7 @@ You are developed by Doy Tech Solutions Inc.` }]
             parts: [{ text: message }] 
         });
 
-        const geminiModel = process.env.GEMINI_MODEL || 'gemini-pro';
+        const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
 
         console.log(`Sending chat request to Gemini model: ${geminiModel}`);
         console.log(`User message: ${message}`);
