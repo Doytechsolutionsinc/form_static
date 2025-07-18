@@ -162,78 +162,19 @@ async function googleSearch(query) {
 }
 
 // --- In-memory session memory (for demonstration; use Redis or DB for production) ---
-const sessionMemory = {};
-
-// --- Helper: Summarize context if too long ---
-function summarizeContext(context) {
-    if (!context || context.length < 8) return context;
-    // Keep first and last 3 messages, summarize the middle
-    const summary = {
-        role: 'system',
-        content: 'Summary: The user and MetroTex discussed several topics. Refer to earlier messages for details.'
-    };
-    return [
-        ...context.slice(0, 3),
-        summary,
-        ...context.slice(-3)
-    ];
-}
-
-// --- Helper: Detect custom commands ---
-function detectCommand(message) {
-    if (!message) return null;
-    if (/^\/joke/i.test(message)) return 'joke';
-    if (/^\/summarize/i.test(message)) return 'summarize';
-    if (/^\/explain like i'?m? ?five/i.test(message)) return 'explain5';
-    if (/^\/personality (.+)/i.test(message)) return { type: 'personality', value: message.match(/^\/personality (.+)/i)[1] };
-    return null;
-}
-
-// --- Helper: Get or set session memory ---
-function getSessionMemory(conversationId) {
-    if (!sessionMemory[conversationId]) {
-        sessionMemory[conversationId] = { facts: [], userName: null, personality: 'friendly and natural' };
-    }
-    return sessionMemory[conversationId];
-}
+// Remove sessionMemory, summarizeContext, detectCommand, getSessionMemory helpers
 
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
-    const { message, context, conversationId } = req.body; // Added conversationId from frontend
-
+    const { message, context, conversationId } = req.body;
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
     }
-
     if (!process.env.GEMINI_API_KEY) {
         console.error('GEMINI_API_KEY is not set in environment variables.');
         return res.status(500).json({ error: 'Server configuration error: Gemini API key missing.' });
     }
-
-    const userId = req.user.uid; // Get user ID from authenticated token
-
-    // --- Advanced features: session memory, personality, commands ---
-    const mem = getSessionMemory(conversationId || userId);
-    // Detect and handle custom commands
-    const command = detectCommand(message);
-    if (command === 'joke') {
-        return res.json({ reply: "Why did the AI cross the road? To optimize the chicken's path! 😄" });
-    } else if (command === 'summarize') {
-        const summary = context && context.length ? context.map(m => m.content).join(' '): '';
-        return res.json({ reply: `Here's a quick summary: ${summary.slice(0, 300)}...` });
-    } else if (command === 'explain5') {
-        mem.personality = 'explain like I am five';
-    } else if (command && command.type === 'personality') {
-        mem.personality = command.value;
-        return res.json({ reply: `Okay! I'll use a ${mem.personality} personality from now on.` });
-    }
-    // Personalization: detect and remember user name
-    if (/my name is ([a-zA-Z]+)/i.test(message)) {
-        mem.userName = message.match(/my name is ([a-zA-Z]+)/i)[1];
-    }
-    // Summarize context if too long
-    const shortContext = summarizeContext(context);
-
+    const userId = req.user.uid;
     try {
         let searchContext = null;
         let forceSearch = false;
@@ -241,7 +182,6 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             searchContext = await googleSearch(message);
             forceSearch = !!searchContext;
         }
-        // Strong system prompt if using search
         let systemPersona;
         if (forceSearch) {
             systemPersona = {
@@ -251,12 +191,12 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         } else {
             systemPersona = {
                 role: 'user',
-                parts: [{ text: `You are MetroTex, a state-of-the-art, human-like AI assistant.\n\nPERSONALITY:\n- Be context-aware, dynamic, and engaging.\n- Respond naturally, like a real person.\n- Use humor, empathy, and curiosity.\n- Only introduce yourself at the start of a conversation or if asked.\n- Avoid repeating yourself or overusing branding.\n- Reference earlier parts of the conversation when relevant.\n- Use natural transitions, acknowledgments, and conversational cues.\n- Be creative, warm, and adaptable.\n- If the user asks who you are, introduce yourself as MetroTex, an AI by Doy Tech Solutions Inc.\n- Your current personality is: ${mem.personality}${mem.userName ? `\n- The user's name is: ${mem.userName}` : ''}\n\nEXAMPLES:\n- If the user says "who are you?", reply: "Hi, I'm MetroTex, your AI assistant, created by Doy Tech Solutions Inc."\n- If the user says "hello" at the start, reply: "Hey there! How can I help you today?"\n- If the user asks a follow-up, reference their previous question.\n\nNever be robotic or repetitive. Be the most natural, helpful, and engaging AI possible.` }]
+                parts: [{ text: `You are MetroTex, a state-of-the-art, human-like AI assistant.\n\nPERSONALITY:\n- Be context-aware, dynamic, and engaging.\n- Respond naturally, like a real person.\n- Use humor, empathy, and curiosity.\n- Only introduce yourself at the start of a conversation or if asked.\n- Avoid repeating yourself or overusing branding.\n- Reference earlier parts of the conversation when relevant.\n- Use natural transitions, acknowledgments, and conversational cues.\n- Be creative, warm, and adaptable.\n- If the user asks who you are, introduce yourself as MetroTex, an AI by Doy Tech Solutions Inc.\n\nEXAMPLES:\n- If the user says "who are you?", reply: "Hi, I'm MetroTex, your AI assistant, created by Doy Tech Solutions Inc."\n- If the user says "hello" at the start, reply: "Hey there! How can I help you today?"\n- If the user asks a follow-up, reference their previous question.\n\nNever be robotic or repetitive. Be the most natural, helpful, and engaging AI possible.` }]
             };
         }
         // Convert context to Gemini format
         const messagesForGemini = [systemPersona];
-        (shortContext || []).forEach(msg => {
+        (context || []).forEach(msg => {
             messagesForGemini.push({
                 role: msg.role === 'user' ? 'user' : 'model',
                 parts: [{ text: msg.content }]
@@ -306,8 +246,7 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         );
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
         // --- POST-PROCESSING: Make response more friendly and non-repetitive ---
-        const friendlyReply = makeFriendly(reply, shortContext, message);
-
+        const friendlyReply = makeFriendly(reply, context, message);
         if (friendlyReply) {
             // --- NEW: Save chat history to Firestore & Handle Title Generation ---
             let currentConversationId = conversationId;
