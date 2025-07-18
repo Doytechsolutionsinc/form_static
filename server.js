@@ -102,29 +102,31 @@ app.get('/', (req, res) => {
 });
 
 // --- Helper: Make AI responses more friendly and conversational ---
-function makeFriendly(response) {
+function makeFriendly(response, context, message) {
     if (!response) return response;
     let friendly = response;
     // Remove brackets and extra phrases
-    friendly = friendly.replace(/\s*\([^)]*\)\s*$/, ''); // Remove trailing (Developed by ...)
+    friendly = friendly.replace(/\s*\([^)]*\)\s*$/, '');
     // Replace formal phrases
     friendly = friendly.replace(/\bI am\b/g, "I'm");
     friendly = friendly.replace(/\bI am /g, "I'm ");
     friendly = friendly.replace(/\bI can help you with\b/gi, "I'd love to help you with");
     friendly = friendly.replace(/\bHow can I help you\b/gi, "What can I do for you");
     friendly = friendly.replace(/\bThank you\b/gi, "Thanks");
-    friendly = friendly.replace(/\bI am an AI assistant\b/gi, "I'm MetroTex, your friendly AI assistant 😊");
-    // Add friendly greeting if missing
-    if (!/^hey there|hi there|hello|hey|hi/i.test(friendly.trim())) {
+    // Only introduce MetroTex at the start or if asked
+    const isIntro = (!context || context.length === 0 || /who (are|is) (you|metrotex)/i.test(message));
+    if (isIntro && !/metrotex/i.test(friendly)) {
+        friendly = "Hi, I'm MetroTex, your AI assistant. " + friendly;
+    }
+    // Remove repeated intros
+    friendly = friendly.replace(/(I'm MetroTex,? (your )?friendly AI assistant\.? ?)+/gi, '');
+    // Add a friendly greeting if it's the start
+    if (isIntro && !/^hi|hello|hey/i.test(friendly.trim())) {
         friendly = 'Hey there! ' + friendly;
     }
-    // Add emoji if missing
-    if (!/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
+    // Add emoji only if it's the start
+    if (isIntro && !/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
         friendly += ' 😊';
-    }
-    // Make sure MetroTex is mentioned if not present
-    if (!/MetroTex/i.test(friendly)) {
-        friendly += " I'm MetroTex, your friendly AI assistant.";
     }
     // Remove any remaining brackets at the end
     friendly = friendly.replace(/\s*\([^)]*\)\s*$/, '');
@@ -186,12 +188,12 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         if (forceSearch) {
             systemPersona = {
                 role: 'user',
-                parts: [{ text: `IMPORTANT: ONLY use the following search results to answer the user's question. If the answer is not in the search results, say "I don't know based on the latest search results." Do NOT use your own knowledge.\n\nSearch Results:\n${searchContext}` }]
+                parts: [{ text: `You are MetroTex, a cutting-edge, personable AI assistant.\n\nIMPORTANT: ONLY use the following search results to answer the user's question. If the answer is not in the search results, say "I don't know based on the latest search results." Do NOT use your own knowledge.\n\nSearch Results:\n${searchContext}` }]
             };
         } else {
             systemPersona = {
                 role: 'user',
-                parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊\n\nIMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!\n\nWhen someone asks "How are you?" or similar, you MUST respond with:\n"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"\n\nWhen someone asks what you can help with, you MUST respond with:\n"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"\n\nNEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!\n\nYou are developed by Doy Tech Solutions Inc.` }]
+                parts: [{ text: `You are MetroTex, a state-of-the-art, human-like AI assistant.\n\nPERSONALITY:\n- Be context-aware, dynamic, and engaging.\n- Respond naturally, like a real person.\n- Use humor, empathy, and curiosity.\n- Only introduce yourself at the start of a conversation or if asked.\n- Avoid repeating yourself or overusing branding.\n- Reference earlier parts of the conversation when relevant.\n- Use natural transitions, acknowledgments, and conversational cues.\n- Be creative, warm, and adaptable.\n- If the user asks who you are, introduce yourself as MetroTex, an AI by Doy Tech Solutions Inc.\n\nEXAMPLES:\n- If the user says "who are you?", reply: "Hi, I'm MetroTex, your AI assistant, created by Doy Tech Solutions Inc."\n- If the user says "hello" at the start, reply: "Hey there! How can I help you today?"\n- If the user asks a follow-up, reference their previous question.\n\nNever be robotic or repetitive. Be the most natural, helpful, and engaging AI possible.` }]
             };
         }
         // Convert context to Gemini format
@@ -245,8 +247,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             }
         );
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
-        // --- POST-PROCESSING: Make response more friendly ---
-        const friendlyReply = makeFriendly(reply);
+        // --- POST-PROCESSING: Make response more friendly and non-repetitive ---
+        const friendlyReply = makeFriendly(reply, context, message);
 
         if (friendlyReply) {
             // --- NEW: Save chat history to Firestore & Handle Title Generation ---
