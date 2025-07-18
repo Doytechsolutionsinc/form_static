@@ -75,6 +75,8 @@ const verifyIdToken = async (req, res, next) => {
 const allowedOrigins = [
     'http://localhost:3000',
     'https://metrotexonline.vercel.app',
+    'https://metrotexonline.vercel.app/',
+    'https://metrotexonline.vercel.app/*',
 ];
 
 app.use(cors({

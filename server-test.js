@@ -13,6 +13,8 @@ const PORT = process.env.PORT || 5000; // Use port from environment variable or 
 const allowedOrigins = [
     'http://localhost:3000',
     'https://metrotexonline.vercel.app',
+    'https://metrotexonline.vercel.app/',
+    'https://metrotexonline.vercel.app/*',
 ];
 
 app.use(cors({
