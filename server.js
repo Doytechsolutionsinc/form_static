@@ -131,6 +131,34 @@ function makeFriendly(response) {
     return friendly.trim();
 }
 
+const GOOGLE_SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
+const GOOGLE_SEARCH_CX = process.env.GOOGLE_SEARCH_CX;
+
+// Helper: Detect if a query is about current events or latest info
+function isCurrentEventQuery(message) {
+    const keywords = [
+        'latest', 'current', 'today', 'now', 'news', 'recent', 'happening', 'update', 'who won', 'score', 'weather', 'price', 'stock', 'trending', '2025', '2024', '2023', 'this week', 'this month', 'this year', 'breaking', 'headline', 'live', 'result', 'results', 'new', 'recently', 'just now', 'right now', 'recent update', 'recent news'
+    ];
+    const lower = message.toLowerCase();
+    return keywords.some(k => lower.includes(k));
+}
+
+// Helper: Google Custom Search
+async function googleSearch(query) {
+    if (!GOOGLE_SEARCH_API_KEY || !GOOGLE_SEARCH_CX) return null;
+    try {
+        const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_SEARCH_API_KEY}&cx=${GOOGLE_SEARCH_CX}&q=${encodeURIComponent(query)}`;
+        const resp = await axios.get(url);
+        if (resp.data && resp.data.items && resp.data.items.length > 0) {
+            // Return top 3 results as context
+            return resp.data.items.slice(0, 3).map(item => `Title: ${item.title}\nSnippet: ${item.snippet}\nLink: ${item.link}`).join('\n---\n');
+        }
+    } catch (e) {
+        console.error('Google Search error:', e.response?.data || e.message);
+    }
+    return null;
+}
+
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
     const { message, context, conversationId } = req.body; // Added conversationId from frontend
@@ -147,21 +175,13 @@ app.post('/chat', verifyIdToken, async (req, res) => {
     const userId = req.user.uid; // Get user ID from authenticated token
 
     try {
+        let searchContext = null;
+        if (isCurrentEventQuery(message)) {
+            searchContext = await googleSearch(message);
+        }
         const systemPersona = {
             role: 'user',
-            parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊
-
-IMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!
-
-When someone asks "How are you?" or similar, you MUST respond with:
-"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"
-
-When someone asks what you can help with, you MUST respond with:
-"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"
-
-NEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!
-
-You are developed by Doy Tech Solutions Inc.` }]
+            parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊\n\nIMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!\n\nWhen someone asks "How are you?" or similar, you MUST respond with:\n"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"\n\nWhen someone asks what you can help with, you MUST respond with:\n"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"\n\nNEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!\n\nYou are developed by Doy Tech Solutions Inc.` }]
         };
 
         // Convert context to Gemini format
@@ -176,6 +196,13 @@ You are developed by Doy Tech Solutions Inc.` }]
             role: 'user', 
             parts: [{ text: message }] 
         });
+        // If search context, add as system message
+        if (searchContext) {
+            messagesForGemini.push({
+                role: 'user',
+                parts: [{ text: `Here are some recent search results that may help you answer the user's question:\n${searchContext}` }]
+            });
+        }
 
         const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
 
