@@ -43,6 +43,8 @@ app.get('/', (req, res) => {
 function makeFriendly(response) {
     if (!response) return response;
     let friendly = response;
+    // Remove brackets and extra phrases
+    friendly = friendly.replace(/\s*\([^)]*\)\s*$/, ''); // Remove trailing (Developed by ...)
     // Replace formal phrases
     friendly = friendly.replace(/\bI am\b/g, "I'm");
     friendly = friendly.replace(/\bI am /g, "I'm ");
@@ -58,14 +60,13 @@ function makeFriendly(response) {
     if (!/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
         friendly += ' 😊';
     }
-    // Make sure MetroTex and Doy Tech Solutions Inc. are mentioned if not present
+    // Make sure MetroTex is mentioned if not present
     if (!/MetroTex/i.test(friendly)) {
         friendly += " I'm MetroTex, your friendly AI assistant.";
     }
-    if (!/Doy Tech Solutions Inc\./i.test(friendly)) {
-        friendly += " (Developed by Doy Tech Solutions Inc.)";
-    }
-    return friendly;
+    // Remove any remaining brackets at the end
+    friendly = friendly.replace(/\s*\([^)]*\)\s*$/, '');
+    return friendly.trim();
 }
 
 // --- AI Chat Endpoint ---
@@ -185,6 +186,15 @@ You are developed by Doy Tech Solutions Inc.` }]
         }
         res.status(500).json({ error: errorMessage });
     }
+});
+
+// --- Image Generation Endpoint ---
+app.post('/generate-image', async (req, res) => {
+    // --- Gemini API does not support image generation ---
+    if (process.env.GEMINI_IMAGE_GEN === 'true') {
+        return res.status(501).json({ error: 'Gemini API does not currently support image generation. Please use Stable Horde or another supported provider.' });
+    }
+    // ... existing Stable Horde code ...
 });
 
 // --- Test endpoint ---
