@@ -101,6 +101,35 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
+// --- Helper: Make AI responses more friendly and conversational ---
+function makeFriendly(response) {
+    if (!response) return response;
+    let friendly = response;
+    // Replace formal phrases
+    friendly = friendly.replace(/\bI am\b/g, "I'm");
+    friendly = friendly.replace(/\bI am /g, "I'm ");
+    friendly = friendly.replace(/\bI can help you with\b/gi, "I'd love to help you with");
+    friendly = friendly.replace(/\bHow can I help you\b/gi, "What can I do for you");
+    friendly = friendly.replace(/\bThank you\b/gi, "Thanks");
+    friendly = friendly.replace(/\bI am an AI assistant\b/gi, "I'm MetroTex, your friendly AI assistant 😊");
+    // Add friendly greeting if missing
+    if (!/^hey there|hi there|hello|hey|hi/i.test(friendly.trim())) {
+        friendly = 'Hey there! ' + friendly;
+    }
+    // Add emoji if missing
+    if (!/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
+        friendly += ' 😊';
+    }
+    // Make sure MetroTex and Doy Tech Solutions Inc. are mentioned if not present
+    if (!/MetroTex/i.test(friendly)) {
+        friendly += " I'm MetroTex, your friendly AI assistant.";
+    }
+    if (!/Doy Tech Solutions Inc\./i.test(friendly)) {
+        friendly += " (Developed by Doy Tech Solutions Inc.)";
+    }
+    return friendly;
+}
+
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
     const { message, context, conversationId } = req.body; // Added conversationId from frontend
@@ -190,7 +219,10 @@ You are developed by Doy Tech Solutions Inc.` }]
 
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-        if (reply) {
+        // --- POST-PROCESSING: Make response more friendly ---
+        const friendlyReply = makeFriendly(reply);
+
+        if (friendlyReply) {
             // --- NEW: Save chat history to Firestore & Handle Title Generation ---
             let currentConversationId = conversationId;
             let isNewConversation = false;
@@ -209,7 +241,7 @@ You are developed by Doy Tech Solutions Inc.` }]
             const chatEntryData = {
                 userId: userId,
                 userMessage: message,
-                aiResponse: reply,
+                aiResponse: friendlyReply,
                 timestamp: admin.firestore.FieldValue.serverTimestamp(),
                 conversationId: currentConversationId, // Link to the conversation
                 title: isNewConversation ? (message.substring(0, 50) + '...') : null // Temporary title if new conversation
@@ -267,7 +299,7 @@ You are developed by Doy Tech Solutions Inc.` }]
             // --- END NEW: Save chat history & Title Generation ---
 
             res.json({ 
-                reply: reply, 
+                reply: friendlyReply, 
                 conversationId: currentConversationId, // Return the conversation ID
                 entryId: chatEntryDocRef.id // Return the ID of the newly saved message document
             });
@@ -442,7 +474,11 @@ app.post('/generate-image', verifyIdToken, async (req, res) => {
         console.error('Error in /generate-image endpoint (overall) or saving image:', error.response?.data || error.message);
         let errorMessage = 'Failed to generate image. Please try again later.';
         if (error.response && error.response.data && error.response.data.message) {
-            errorMessage = `Image generation failed: ${error.response.data.message}`;
+            if (error.response.data.message === '10 per 1 minute') {
+                errorMessage = 'You are generating images too quickly. Please wait a minute and try again.';
+            } else {
+                errorMessage = `Image generation failed: ${error.response.data.message}`;
+            }
         } else if (error.code === 'ECONNABORTED') {
             errorMessage = 'Image generation request timed out (Backend to Stable Horde). Please try again or simplify your message.';
         } else if (error.response && error.response.status === 404) {

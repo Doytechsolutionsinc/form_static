@@ -39,6 +39,35 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running with Gemini API!' });
 });
 
+// --- Helper: Make AI responses more friendly and conversational ---
+function makeFriendly(response) {
+    if (!response) return response;
+    let friendly = response;
+    // Replace formal phrases
+    friendly = friendly.replace(/\bI am\b/g, "I'm");
+    friendly = friendly.replace(/\bI am /g, "I'm ");
+    friendly = friendly.replace(/\bI can help you with\b/gi, "I'd love to help you with");
+    friendly = friendly.replace(/\bHow can I help you\b/gi, "What can I do for you");
+    friendly = friendly.replace(/\bThank you\b/gi, "Thanks");
+    friendly = friendly.replace(/\bI am an AI assistant\b/gi, "I'm MetroTex, your friendly AI assistant 😊");
+    // Add friendly greeting if missing
+    if (!/^hey there|hi there|hello|hey|hi/i.test(friendly.trim())) {
+        friendly = 'Hey there! ' + friendly;
+    }
+    // Add emoji if missing
+    if (!/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
+        friendly += ' 😊';
+    }
+    // Make sure MetroTex and Doy Tech Solutions Inc. are mentioned if not present
+    if (!/MetroTex/i.test(friendly)) {
+        friendly += " I'm MetroTex, your friendly AI assistant.";
+    }
+    if (!/Doy Tech Solutions Inc\./i.test(friendly)) {
+        friendly += " (Developed by Doy Tech Solutions Inc.)";
+    }
+    return friendly;
+}
+
 // --- AI Chat Endpoint ---
 app.post('/chat', async (req, res) => {
     const { message, context = [] } = req.body;
@@ -127,10 +156,13 @@ You are developed by Doy Tech Solutions Inc.` }]
 
         const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-        if (reply) {
-            console.log(`Gemini response: ${reply}`);
+        // --- POST-PROCESSING: Make response more friendly ---
+        const friendlyReply = makeFriendly(reply);
+
+        if (friendlyReply) {
+            console.log(`Gemini response: ${friendlyReply}`);
             res.json({ 
-                reply: reply,
+                reply: friendlyReply,
                 model: geminiModel,
                 timestamp: new Date().toISOString()
             });
