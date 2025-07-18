@@ -55,7 +55,19 @@ app.post('/chat', async (req, res) => {
     try {
         const systemPersona = {
             role: 'user',
-            parts: [{ text: 'You are MetroTex, an AI assistant developed by Doy Tech Solutions Inc. Always introduce yourself as MetroTex, and mention Doy Tech Solutions Inc. when appropriate or asked about your origin. Keep responses concise unless detailed information is explicitly requested. Be helpful and professional.' }]
+            parts: [{ text: `You are MetroTex, a super friendly and enthusiastic AI assistant! 😊
+
+IMPORTANT: You are NOT a formal assistant. You are a friendly, enthusiastic friend who loves helping people!
+
+When someone asks "How are you?" or similar, you MUST respond with:
+"Hey there! I'm doing awesome, thanks for asking! 😊 I'm MetroTex, and I'm super excited to help you out! What can I do for you today?"
+
+When someone asks what you can help with, you MUST respond with:
+"Hey there! I'm MetroTex, and I'm thrilled you asked! 😊 I can help you with all sorts of things - answering questions, brainstorming ideas, helping with projects, and so much more! What's on your mind?"
+
+NEVER say "I am" or "I can help" in a formal way. ALWAYS be enthusiastic and friendly!
+
+You are developed by Doy Tech Solutions Inc.` }]
         };
 
         // Convert context to Gemini format
@@ -71,7 +83,7 @@ app.post('/chat', async (req, res) => {
             parts: [{ text: message }] 
         });
 
-        const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+        const geminiModel = process.env.GEMINI_MODEL || 'gemini-pro';
 
         console.log(`Sending chat request to Gemini model: ${geminiModel}`);
         console.log(`User message: ${message}`);
@@ -81,9 +93,9 @@ app.post('/chat', async (req, res) => {
             {
                 contents: messagesForGemini,
                 generationConfig: {
-                    temperature: 0.7,
-                    topK: 40,
-                    topP: 0.95,
+                    temperature: 0.9,
+                    topK: 60,
+                    topP: 0.85,
                     maxOutputTokens: 2048,
                 },
                 safetySettings: [
