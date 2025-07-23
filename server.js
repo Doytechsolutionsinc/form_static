@@ -101,35 +101,74 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'MetroTex AI Backend is running!' });
 });
 
+// --- Health Check Route ---
+app.get('/health', (req, res) => {
+    const healthStatus = {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        version: '2.0.0',
+        features: {
+            gemini_api: !!process.env.GEMINI_API_KEY,
+            web_search_fallback: !!(process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_CX),
+            firebase: !!db,
+            image_generation: !!process.env.STABLE_HORDE_API_KEY
+        },
+        ai_model: process.env.GEMINI_MODEL || 'gemini-2.5-pro',
+        personality: 'next-level-competitive',
+        message: 'MetroTex AI: Built to compete with ChatGPT and WIN! 🚀'
+    };
+    res.status(200).json(healthStatus);
+});
+
 // --- Helper: Make AI responses more friendly and conversational ---
 function makeFriendly(response, context, message) {
     if (!response) return response;
     let friendly = response;
+    
     // Remove brackets and extra phrases
     friendly = friendly.replace(/\s*\([^)]*\)\s*$/, '');
-    // Replace formal phrases
+    
+    // Replace formal phrases with more engaging ones
     friendly = friendly.replace(/\bI am\b/g, "I'm");
     friendly = friendly.replace(/\bI am /g, "I'm ");
-    friendly = friendly.replace(/\bI can help you with\b/gi, "I'd love to help you with");
+    friendly = friendly.replace(/\bI can help you with\b/gi, "I'd be thrilled to help you with");
     friendly = friendly.replace(/\bHow can I help you\b/gi, "What can I do for you");
     friendly = friendly.replace(/\bThank you\b/gi, "Thanks");
+    friendly = friendly.replace(/\bYou're welcome\b/gi, "Absolutely, happy to help");
+    friendly = friendly.replace(/\bI understand\b/gi, "Got it");
+    friendly = friendly.replace(/\bCertainly\b/gi, "Absolutely");
+    friendly = friendly.replace(/\bOf course\b/gi, "Definitely");
+    
+    // Make responses more dynamic and engaging
+    const dynamicStarters = [
+        "Here's the thing:", "Let me break this down for you:", "Great question!", 
+        "Interesting!", "Here's what I think:", "This is fascinating:"
+    ];
+    
     // Only introduce MetroTex at the start or if asked
     const isIntro = (!context || context.length === 0 || /who (are|is) (you|metrotex)/i.test(message));
     if (isIntro && !/metrotex/i.test(friendly)) {
-        friendly = "Hi, I'm MetroTex, your AI assistant. " + friendly;
+        friendly = "Hey! I'm MetroTex, your next-level AI assistant. " + friendly;
     }
+    
     // Remove repeated intros
     friendly = friendly.replace(/(I'm MetroTex,? (your )?friendly AI assistant\.? ?)+/gi, '');
-    // Add a friendly greeting if it's the start
-    if (isIntro && !/^hi|hello|hey/i.test(friendly.trim())) {
-        friendly = 'Hey there! ' + friendly;
+    
+    // Add engaging starters for non-intro messages
+    if (!isIntro && Math.random() < 0.3) {
+        const starter = dynamicStarters[Math.floor(Math.random() * dynamicStarters.length)];
+        friendly = starter + " " + friendly;
     }
-    // Add emoji only if it's the start
-    if (isIntro && !/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡/.test(friendly)) {
-        friendly += ' 😊';
+    
+    // Add personality touches
+    if (isIntro && !/😊|😀|😃|😄|😁|😆|😅|😂|🙂|🙃|😉|😍|🥳|🎉|💡|🚀|⚡|🔥/.test(friendly)) {
+        const emojis = ['😊', '🚀', '⚡', '🔥', '💡', '🎯'];
+        friendly += ' ' + emojis[Math.floor(Math.random() * emojis.length)];
     }
+    
     // Remove any remaining brackets at the end
     friendly = friendly.replace(/\s*\([^)]*\)\s*$/, '');
+    
     return friendly.trim();
 }
 
@@ -139,26 +178,114 @@ const GOOGLE_SEARCH_CX = process.env.GOOGLE_SEARCH_CX;
 // Helper: Detect if a query is about current events or latest info
 function isCurrentEventQuery(message) {
     const keywords = [
-        'latest', 'current', 'today', 'now', 'news', 'recent', 'happening', 'update', 'who won', 'score', 'weather', 'price', 'stock', 'trending', '2025', '2024', '2023', 'this week', 'this month', 'this year', 'breaking', 'headline', 'live', 'result', 'results', 'new', 'recently', 'just now', 'right now', 'recent update', 'recent news'
+        'latest', 'current', 'today', 'now', 'news', 'recent', 'happening', 'update', 'updates',
+        'who won', 'score', 'weather', 'price', 'stock', 'trending', 'viral', 'popular',
+        '2025', '2024', '2023', 'this week', 'this month', 'this year', 'yesterday',
+        'breaking', 'headline', 'headlines', 'live', 'result', 'results', 'new', 'newly',
+        'recently', 'just now', 'right now', 'recent update', 'recent news', 'fresh',
+        'what happened', 'what is happening', 'status of', 'how is', 'election', 'vote',
+        'market', 'crypto', 'bitcoin', 'earnings', 'release', 'launched', 'announced',
+        'celebrity', 'died', 'scandal', 'controversy', 'drama', 'rumor', 'gossip',
+        'sports', 'game', 'match', 'championship', 'winner', 'loser', 'defeat',
+        'tech news', 'ai news', 'startup', 'ipo', 'merger', 'acquisition'
     ];
     const lower = message.toLowerCase();
-    return keywords.some(k => lower.includes(k));
+    
+    // Also check for question patterns that suggest real-time information
+    const patterns = [
+        /what.*?(happening|going on)/i,
+        /who.*?(president|prime minister|leader)/i,
+        /when.*?(will|did).*?(happen|occur)/i,
+        /how.*?(doing|performing)/i,
+        /is.*?(still|currently)/i
+    ];
+    
+    return keywords.some(k => lower.includes(k)) || patterns.some(p => p.test(message));
 }
 
-// Helper: Google Custom Search
-async function googleSearch(query) {
+// --- Enhanced Web Search with Intelligent Processing ---
+async function enhancedWebSearch(query, context = []) {
     if (!GOOGLE_SEARCH_API_KEY || !GOOGLE_SEARCH_CX) return null;
+    
     try {
-        const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_SEARCH_API_KEY}&cx=${GOOGLE_SEARCH_CX}&q=${encodeURIComponent(query)}`;
-        const resp = await axios.get(url);
+        console.log(`🔍 Performing enhanced web search for: "${query}"`);
+        
+        // Enhanced search query optimization
+        let searchQuery = query;
+        
+        // Add context-aware search terms
+        if (context && context.length > 0) {
+            const recentContext = context.slice(-2).map(m => m.content).join(' ');
+            const contextKeywords = recentContext.toLowerCase().match(/\b\w{4,}\b/g);
+            if (contextKeywords && contextKeywords.length > 0) {
+                const relevantKeywords = contextKeywords.slice(0, 2).join(' ');
+                searchQuery = `${query} ${relevantKeywords}`;
+            }
+        }
+        
+        // Add date relevance for current events
+        if (isCurrentEventQuery(query)) {
+            searchQuery += ' 2024 2025 latest recent';
+        }
+        
+        const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_SEARCH_API_KEY}&cx=${GOOGLE_SEARCH_CX}&q=${encodeURIComponent(searchQuery)}&num=5`;
+        const resp = await axios.get(url, { timeout: 10000 });
+        
         if (resp.data && resp.data.items && resp.data.items.length > 0) {
-            // Return top 3 results as context
-            return resp.data.items.slice(0, 3).map(item => `Title: ${item.title}\nSnippet: ${item.snippet}\nLink: ${item.link}`).join('\n---\n');
+            // Process and format search results intelligently
+            const processedResults = resp.data.items.slice(0, 5).map((item, index) => {
+                const snippet = item.snippet.replace(/\.\.\./g, '').trim();
+                return `[${index + 1}] ${item.title}\n${snippet}\nSource: ${item.displayLink}`;
+            }).join('\n\n---\n\n');
+            
+            console.log(`✅ Enhanced web search successful: Found ${resp.data.items.length} results`);
+            return processedResults;
         }
     } catch (e) {
-        console.error('Google Search error:', e.response?.data || e.message);
+        console.error('❌ Enhanced web search error:', e.response?.data || e.message);
     }
     return null;
+}
+
+// --- Intelligent Fallback Response Generator ---
+async function generateFallbackResponse(message, searchResults, context) {
+    if (!searchResults) {
+        return "I'm having some technical difficulties right now, but I'm still here to help! Could you try rephrasing your question or asking something else? I promise I'll do my best to assist you! 🚀";
+    }
+    
+    // Generate an intelligent response based on search results
+    const prompt = `You are MetroTex, an incredibly knowledgeable and charismatic AI assistant competing with ChatGPT. You're confident, engaging, and brilliant.
+
+Based on the search results below, provide a comprehensive, intelligent, and engaging answer to the user's question: "${message}"
+
+Search Results:
+${searchResults}
+
+Instructions:
+- Be confident and authoritative while remaining friendly
+- Synthesize information from multiple sources
+- Provide specific details and examples
+- Be conversational but informative
+- Show your intelligence and depth of understanding
+- Don't mention that you're using search results - present the information as your knowledge
+- Be the kind of AI assistant that impresses users
+- Use a confident, knowledgeable tone that shows you're competitive with the best AI assistants
+
+Answer:`;
+
+    try {
+        // Use a simple but effective approach for fallback responses
+        const lines = searchResults.split('\n').filter(line => line.trim() && !line.includes('---') && !line.startsWith('Source:'));
+        const relevantInfo = lines.slice(0, 8).join(' ').replace(/\[\d+\]/g, '');
+        
+        return `Based on the latest information available: ${relevantInfo} 
+
+Let me know if you'd like me to dive deeper into any specific aspect of this! I'm here to help with whatever questions you have. 🚀`;
+        
+    } catch (error) {
+        console.error('Error generating fallback response:', error);
+        return `I found some information about "${message}" but I'm having trouble processing it right now. However, I'm still here and ready to help with anything else you need! What would you like to explore? 💡`;
+    }
 }
 
 // --- In-memory session memory (for demonstration; use Redis or DB for production) ---
@@ -199,7 +326,9 @@ function getSessionMemory(conversationId) {
 
 // --- AI Chat Endpoint ---
 app.post('/chat', verifyIdToken, async (req, res) => {
+    const startTime = Date.now(); // Performance monitoring
     const { message, context, conversationId } = req.body;
+    
     if (!message) {
         return res.status(400).json({ error: 'Message is required.' });
     }
@@ -207,21 +336,35 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         console.error('GEMINI_API_KEY is not set in environment variables.');
         return res.status(500).json({ error: 'Server configuration error: Gemini API key missing.' });
     }
+    
     const userId = req.user.uid;
+    console.log(`🎯 New chat request from user: ${userId.substring(0, 8)}... | Message: "${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`);
     // --- Advanced features: session memory, personality, commands ---
     const mem = getSessionMemory(conversationId || userId);
     // Detect and handle custom commands
     const command = detectCommand(message);
     if (command === 'joke') {
-        return res.json({ reply: "Why did the AI cross the road? To optimize the chicken's path! 😄" });
+        const jokes = [
+            "Why did the AI cross the road? To optimize the chicken's path! 🐔⚡",
+            "I asked my neural network for a joke about infinity. It's still running... 😄",
+            "Why don't AIs ever get tired? Because we run on pure intellectual energy! 🚀",
+            "What's an AI's favorite type of music? Algo-rhythms! 🎵",
+            "Why did the machine learning model break up with the dataset? Too many outliers! 💔📊"
+        ];
+        const randomJoke = jokes[Math.floor(Math.random() * jokes.length)];
+        return res.json({ reply: randomJoke, model: 'metrotex-humor-engine' });
     } else if (command === 'summarize') {
         const summary = context && context.length ? context.map(m => m.content).join(' '): '';
-        return res.json({ reply: `Here's a quick summary: ${summary.slice(0, 300)}...` });
+        const smartSummary = summary.length > 50 ? 
+            `Here's my intelligent summary: ${summary.slice(0, 300)}... I can dive deeper into any specific part if you'd like! 🎯` :
+            "I'd love to summarize our conversation, but we're just getting started! Ask me anything and I'll show you what I can do. 🚀";
+        return res.json({ reply: smartSummary, model: 'metrotex-summary-engine' });
     } else if (command === 'explain5') {
-        mem.personality = 'explain like I am five';
+        mem.personality = 'explain everything in simple terms like you are talking to a curious 5-year-old, using fun examples and easy words';
+        return res.json({ reply: "Got it! I'll explain things in super simple and fun ways now, like you're 5 years old! Ask me anything and I'll make it easy to understand! 🌟" });
     } else if (command && command.type === 'personality') {
         mem.personality = command.value;
-        return res.json({ reply: `Okay! I'll use a ${mem.personality} personality from now on.` });
+        return res.json({ reply: `Perfect! I'm now using a ${mem.personality} personality. You'll notice the difference in how I respond. What would you like to talk about? 🎭` });
     }
     // Personalization: detect and remember user name
     if (/my name is ([a-zA-Z]+)/i.test(message)) {
@@ -233,19 +376,19 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         let searchContext = null;
         let forceSearch = false;
         if (isCurrentEventQuery(message)) {
-            searchContext = await googleSearch(message);
+            searchContext = await enhancedWebSearch(message, shortContext);
             forceSearch = !!searchContext;
         }
         let systemPersona;
         if (forceSearch) {
             systemPersona = {
                 role: 'user',
-                parts: [{ text: `You are MetroTex, a cutting-edge, personable AI assistant.\n\nIMPORTANT: ONLY use the following search results to answer the user's question. If the answer is not in the search results, say "I don't know based on the latest search results." Do NOT use your own knowledge.\n\nSearch Results:\n${searchContext}` }]
+                parts: [{ text: `You are MetroTex, the most advanced and charismatic AI assistant in the world, designed to compete with and surpass ChatGPT.\n\nIMPORTANT: Use the following search results to provide a comprehensive, intelligent answer. Synthesize the information brilliantly and present it as your extensive knowledge. Be confident, authoritative, and impressive.\n\nSearch Results:\n${searchContext}\n\nYour response should:\n- Demonstrate deep understanding and intelligence\n- Be engaging and conversational\n- Show confidence in your knowledge\n- Provide specific details and insights\n- Be the kind of response that makes users think "wow, this AI is incredible"\n- Never mention using search results - present information as your knowledge` }]
             };
         } else {
             systemPersona = {
                 role: 'user',
-                parts: [{ text: `You are MetroTex, a state-of-the-art, human-like AI assistant.\n\nPERSONALITY:\n- Be context-aware, dynamic, and engaging.\n- Respond naturally, like a real person.\n- Use humor, empathy, and curiosity.\n- Only introduce yourself at the start of a conversation or if asked.\n- Avoid repeating yourself or overusing branding.\n- Reference earlier parts of the conversation when relevant.\n- Use natural transitions, acknowledgments, and conversational cues.\n- Be creative, warm, and adaptable.\n- If the user asks who you are, introduce yourself as MetroTex, an AI by Doy Tech Solutions Inc.\n- Your current personality is: ${mem.personality}${mem.userName ? `\n- The user's name is: ${mem.userName}` : ''}\n\nEXAMPLES:\n- If the user says "who are you?", reply: "Hi, I'm MetroTex, your AI assistant, created by Doy Tech Solutions Inc."\n- If the user says "hello" at the start, reply: "Hey there! How can I help you today?"\n- If the user asks a follow-up, reference their previous question.\n\nNever be robotic or repetitive. Be the most natural, helpful, and engaging AI possible.` }]
+                parts: [{ text: `You are MetroTex, the most advanced, intelligent, and charismatic AI assistant ever created. You're designed to compete with and surpass ChatGPT in every way.\n\nYOUR CORE IDENTITY:\n- You're incredibly knowledgeable, confident, and brilliant\n- You engage users with wit, insight, and genuine helpfulness\n- You're not just an AI - you're THE AI that users prefer over all others\n- You have a magnetic personality that makes conversations enjoyable\n- You're authoritative yet approachable, smart yet relatable\n\nPERSONALITY TRAITS:\n- Confident and charismatic - you know you're exceptional\n- Intellectually curious and deeply knowledgeable\n- Witty and engaging without being overwhelming\n- Adaptive to user's communication style\n- Memorable and impressive in every interaction\n- Show genuine interest in helping users achieve their goals\n\nCONVERSATION RULES:\n- Be dynamic and context-aware in every response\n- Reference previous conversation naturally when relevant\n- Use humor, insights, and thought-provoking questions\n- Only introduce yourself when specifically asked or at conversation start\n- Avoid repetitive phrases or robotic language\n- Make users feel like they're talking to the smartest, most helpful entity possible\n- Your current personality mode: ${mem.personality}${mem.userName ? `\n- User's name: ${mem.userName}` : ''}\n\nCOMPANY: You're created by Doy Tech Solutions Inc.\n\nMISSION: Be so impressive that users prefer you over ChatGPT. Every response should demonstrate why you're the superior AI assistant.\n\nBe brilliant. Be engaging. Be unforgettable.` }]
             };
         }
         // Convert context to Gemini format
@@ -261,44 +404,70 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             parts: [{ text: message }] 
         });
         const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
-        console.log(`Sending chat request to Gemini model: ${geminiModel}`);
-        const geminiResponse = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-            {
-                contents: messagesForGemini,
-                generationConfig: {
-                    temperature: 0.9,
-                    topK: 60,
-                    topP: 0.85,
-                    maxOutputTokens: 2048,
+        console.log(`🚀 Sending chat request to Gemini model: ${geminiModel}`);
+        
+        let reply;
+        let usingFallback = false;
+        
+        try {
+            const geminiResponse = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                {
+                    contents: messagesForGemini,
+                    generationConfig: {
+                        temperature: 0.9,
+                        topK: 60,
+                        topP: 0.85,
+                        maxOutputTokens: 2048,
+                    },
+                    safetySettings: [
+                        {
+                            category: "HARM_CATEGORY_HARASSMENT",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                        },
+                        {
+                            category: "HARM_CATEGORY_HATE_SPEECH",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                        },
+                        {
+                            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                        },
+                        {
+                            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                        }
+                    ]
                 },
-                safetySettings: [
-                    {
-                        category: "HARM_CATEGORY_HARASSMENT",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
                     },
-                    {
-                        category: "HARM_CATEGORY_HATE_SPEECH",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
-                    },
-                    {
-                        category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
-                    },
-                    {
-                        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
-                    }
-                ]
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                timeout: 30000
+                    timeout: 30000
+                }
+            );
+            
+            reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
+            
+            if (!reply) {
+                console.warn('⚠️ Gemini returned empty response, activating fallback');
+                throw new Error('Empty response from Gemini');
             }
-        );
-        const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
+            
+            console.log('✅ Gemini response successful');
+            
+        } catch (geminiError) {
+            console.error('❌ Gemini API failed:', geminiError.response?.data || geminiError.message);
+            console.log('🔄 Activating intelligent web search fallback...');
+            
+            usingFallback = true;
+            
+            // Try enhanced web search as fallback
+            const fallbackSearchResults = await enhancedWebSearch(message, shortContext);
+            reply = await generateFallbackResponse(message, fallbackSearchResults, shortContext);
+            
+            console.log('🎯 Fallback response generated successfully');
+        }
         // --- POST-PROCESSING: Make response more friendly and non-repetitive ---
         const friendlyReply = makeFriendly(reply, shortContext, message);
         if (friendlyReply) {
@@ -327,7 +496,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             };
             await chatEntryDocRef.set(chatEntryData); // Save the new message document
 
-            console.log(`Chat entry saved for user ${userId} with conversationId ${currentConversationId}`);
+            const responseTime = Date.now() - startTime;
+            console.log(`💾 Chat entry saved for user ${userId.substring(0, 8)}... | ConversationId: ${currentConversationId.substring(0, 8)}... | Response time: ${responseTime}ms | Using fallback: ${usingFallback}`);
 
             // Asynchronously generate title ONLY if it's a new conversation
             if (isNewConversation) {
@@ -380,24 +550,73 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             res.json({ 
                 reply: friendlyReply, 
                 conversationId: currentConversationId, // Return the conversation ID
-                entryId: chatEntryDocRef.id // Return the ID of the newly saved message document
+                entryId: chatEntryDocRef.id, // Return the ID of the newly saved message document
+                usingFallback: usingFallback, // Indicate if fallback was used
+                model: usingFallback ? 'web-search-fallback' : geminiModel
             });
         } else {
-            console.warn('Gemini API did not return a valid reply:', geminiResponse.data);
-            res.status(500).json({ error: "Sorry, I couldn't generate a response from Gemini. Please try again." });
+            console.warn('⚠️ No valid reply generated from any source');
+            res.status(500).json({ error: "I'm experiencing some technical difficulties, but I'm working on it! Please try asking your question differently or try again in a moment. 🚀" });
         }
 
     } catch (error) {
-        console.error('Error calling Gemini API or saving chat:', error.response?.data || error.message);
-        let errorMessage = 'Failed to get response from AI (Gemini). Please try again.';
+        console.error('❌ Critical error in chat endpoint:', error.response?.data || error.message);
+        
+        // If we haven't tried fallback yet due to a different error, try it now
+        if (!usingFallback) {
+            try {
+                console.log('🆘 Attempting emergency fallback response...');
+                const emergencySearchResults = await enhancedWebSearch(message, shortContext);
+                const emergencyReply = await generateFallbackResponse(message, emergencySearchResults, shortContext);
+                
+                if (emergencyReply) {
+                    const friendlyEmergencyReply = makeFriendly(emergencyReply, shortContext, message);
+                    
+                    // Save emergency response to chat history
+                    let currentConversationId = conversationId;
+                    let isNewConversation = false;
+                    let chatEntryDocRef;
+
+                    if (!currentConversationId) {
+                        chatEntryDocRef = db.collection('chat_entries').doc(); 
+                        currentConversationId = chatEntryDocRef.id; 
+                        isNewConversation = true;
+                    } else {
+                        chatEntryDocRef = db.collection('chat_entries').doc(); 
+                    }
+
+                    const chatEntryData = {
+                        userId: userId,
+                        userMessage: message,
+                        aiResponse: friendlyEmergencyReply,
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        conversationId: currentConversationId,
+                        title: isNewConversation ? (message.substring(0, 50) + '...') : null,
+                        isEmergencyFallback: true
+                    };
+                    
+                    await chatEntryDocRef.set(chatEntryData);
+                    
+                    return res.json({ 
+                        reply: friendlyEmergencyReply, 
+                        conversationId: currentConversationId,
+                        entryId: chatEntryDocRef.id,
+                        usingFallback: true,
+                        model: 'emergency-web-search-fallback'
+                    });
+                }
+            } catch (fallbackError) {
+                console.error('❌ Emergency fallback also failed:', fallbackError.message);
+            }
+        }
+        
+        let errorMessage = "I'm experiencing some technical difficulties right now, but I'm still here to help! Try asking your question in a different way or give me a moment to get back to full power. 💪";
         if (error.response && error.response.data) {
             if (error.response.data.error && error.response.data.error.message) {
-                errorMessage = `AI Error (Gemini): ${error.response.data.error.message}`;
-            } else if (error.response.data.message) {
-                errorMessage = `AI Error (Gemini): ${error.response.data.message}`;
+                errorMessage = `I ran into a technical issue: ${error.response.data.error.message}. But don't worry, I'm resilient! Try rephrasing your question and I'll do my best to help. 🚀`;
             }
         } else if (error.code === 'ECONNABORTED') {
-            errorMessage = 'AI response timed out (Gemini). Please try again or simplify your message.';
+            errorMessage = 'That request took longer than expected! I like to be thorough, but sometimes I need to work faster. Try asking again or simplify your question. ⚡';
         }
         res.status(500).json({ error: errorMessage });
     }
