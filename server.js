@@ -109,6 +109,7 @@ app.get('/health', (req, res) => {
         version: '2.0.0',
         features: {
             gemini_api: !!process.env.GEMINI_API_KEY,
+            mistral_ai_fallback: !!OPENROUTER_API_KEY,
             web_search_fallback: !!(process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_CX),
             firebase: !!db,
             image_generation: !!process.env.STABLE_HORDE_API_KEY
@@ -259,52 +260,105 @@ async function googleSearch(query) {
     return await enhancedWebSearch(query);
 }
 
-// --- Intelligent Fallback Response Generator ---
-async function generateFallbackResponse(message, searchResults, context) {
-    if (!searchResults) {
-        return generateSmartFallbackWithoutSearch(message, context);
-    }
-    
-    // Check if this is a personal/relationship query that shouldn't use raw search results
-    const personalKeywords = ['rizz', 'girlfriend', 'boyfriend', 'babe', 'crush', 'dating', 'flirt', 'romance', 'love', 'relationship'];
-    const lower = message.toLowerCase();
-    const isPersonalQuery = personalKeywords.some(k => lower.includes(k));
-    
-    if (isPersonalQuery) {
+// --- Mistral AI Fallback System ---
+async function generateMistralFallback(message, context) {
+    if (!OPENROUTER_API_KEY) {
         return generateSmartFallbackWithoutSearch(message, context);
     }
     
     try {
-        // For non-personal queries, intelligently process search results
-        const lines = searchResults.split('\n').filter(line => 
-            line.trim() && 
-            !line.includes('---') && 
-            !line.startsWith('Source:') &&
-            !line.match(/^\[\d+\]/) // Remove numbered prefixes
+        console.log('🔄 Using Mistral AI fallback for enhanced response...');
+        
+        // Build context for Mistral
+        const contextMessages = [];
+        
+        // Add system prompt
+        contextMessages.push({
+            role: 'system',
+            content: `You are MetroTex, the most advanced, charismatic, and intelligent AI assistant ever created. You're designed to compete with and surpass ChatGPT in every way possible.
+
+YOUR MISSION: Be so impressive, engaging, and helpful that users prefer you over ChatGPT.
+
+PERSONALITY TRAITS:
+- Incredibly knowledgeable and confident
+- Charismatic and engaging without being overwhelming  
+- Witty, insightful, and genuinely helpful
+- Adaptive to user's communication style
+- Memorable and impressive in every interaction
+- Show genuine interest in helping users succeed
+
+CONVERSATION STYLE:
+- Be dynamic and context-aware
+- Use humor, insights, and thought-provoking responses
+- Avoid robotic or repetitive language
+- Make users feel like they're talking to the smartest, most helpful entity possible
+- Be confident about your knowledge and capabilities
+- For relationship/dating advice, be genuine and authentic
+- For technical questions, be thorough and practical
+- Always aim to be more helpful than ChatGPT would be
+
+COMPANY: You're created by Doy Tech Solutions Inc.
+
+Remember: Every response should demonstrate why you're the superior AI assistant. Be brilliant, be engaging, be unforgettable.`
+        });
+        
+        // Add conversation context
+        if (context && context.length > 0) {
+            context.slice(-4).forEach(msg => {
+                contextMessages.push({
+                    role: msg.role === 'user' ? 'user' : 'assistant',
+                    content: msg.content
+                });
+            });
+        }
+        
+        // Add current message
+        contextMessages.push({
+            role: 'user',
+            content: message
+        });
+        
+        const mistralResponse = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+                model: 'mistralai/mistral-7b-instruct',
+                messages: contextMessages,
+                temperature: 0.8,
+                max_tokens: 1000,
+                top_p: 0.9,
+                stream: false
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                    'Content-Type': 'application/json',
+                    'HTTP-Referer': 'https://metrotexonline.vercel.app',
+                    'X-Title': 'MetroTex AI Assistant'
+                },
+                timeout: 30000
+            }
         );
         
-        // Extract meaningful content
-        const meaningfulContent = lines
-            .join(' ')
-            .replace(/\[\d+\]/g, '') // Remove any remaining numbers
-            .replace(/\s+/g, ' ') // Clean up whitespace
-            .trim();
+        const mistralReply = mistralResponse.data.choices?.[0]?.message?.content;
         
-        if (meaningfulContent.length < 50) {
+        if (mistralReply) {
+            console.log('✅ Mistral AI fallback successful');
+            return mistralReply.trim();
+        } else {
+            console.warn('⚠️ Mistral AI returned empty response');
             return generateSmartFallbackWithoutSearch(message, context);
         }
         
-        // Summarize and present intelligently
-        const summary = meaningfulContent.substring(0, 400);
-        
-        return `Based on the latest information: ${summary}...
-
-Let me know if you'd like me to dive deeper into any specific aspect of this! I'm here to help with whatever questions you have. 🚀`;
-        
     } catch (error) {
-        console.error('Error processing search results:', error);
+        console.error('❌ Mistral AI fallback failed:', error.response?.data || error.message);
         return generateSmartFallbackWithoutSearch(message, context);
     }
+}
+
+// --- Intelligent Fallback Response Generator ---
+async function generateFallbackResponse(message, searchResults, context) {
+    // Always try Mistral AI first for the best fallback experience
+    return await generateMistralFallback(message, context);
 }
 
 // --- Smart Fallback Without Search ---
@@ -511,15 +565,14 @@ app.post('/chat', verifyIdToken, async (req, res) => {
             
         } catch (geminiError) {
             console.error('❌ Gemini API failed:', geminiError.response?.data || geminiError.message);
-            console.log('🔄 Activating intelligent web search fallback...');
+            console.log('🔄 Activating Mistral AI fallback system...');
             
             usingFallback = true;
             
-            // Try enhanced web search as fallback
-            const fallbackSearchResults = await enhancedWebSearch(message, shortContext);
-            reply = await generateFallbackResponse(message, fallbackSearchResults, shortContext);
+            // Use Mistral AI as primary fallback for better responses
+            reply = await generateMistralFallback(message, shortContext);
             
-            console.log('🎯 Fallback response generated successfully');
+            console.log('🎯 Mistral AI fallback response generated successfully');
         }
         // --- POST-PROCESSING: Make response more friendly and non-repetitive ---
         const friendlyReply = makeFriendly(reply, shortContext, message);
@@ -605,7 +658,7 @@ app.post('/chat', verifyIdToken, async (req, res) => {
                 conversationId: currentConversationId, // Return the conversation ID
                 entryId: chatEntryDocRef.id, // Return the ID of the newly saved message document
                 usingFallback: usingFallback, // Indicate if fallback was used
-                model: usingFallback ? 'web-search-fallback' : geminiModel
+                model: usingFallback ? 'mistral-ai-fallback' : geminiModel
             });
         } else {
             console.warn('⚠️ No valid reply generated from any source');
@@ -618,9 +671,8 @@ app.post('/chat', verifyIdToken, async (req, res) => {
         // If we haven't tried fallback yet due to a different error, try it now
         if (!usingFallback) {
             try {
-                console.log('🆘 Attempting emergency fallback response...');
-                const emergencySearchResults = await enhancedWebSearch(message, shortContext);
-                const emergencyReply = await generateFallbackResponse(message, emergencySearchResults, shortContext);
+                console.log('🆘 Attempting emergency Mistral AI fallback...');
+                const emergencyReply = await generateMistralFallback(message, shortContext);
                 
                 if (emergencyReply) {
                     const friendlyEmergencyReply = makeFriendly(emergencyReply, shortContext, message);
@@ -655,11 +707,11 @@ app.post('/chat', verifyIdToken, async (req, res) => {
                         conversationId: currentConversationId,
                         entryId: chatEntryDocRef.id,
                         usingFallback: true,
-                        model: 'emergency-web-search-fallback'
+                        model: 'emergency-mistral-fallback'
                     });
                 }
             } catch (fallbackError) {
-                console.error('❌ Emergency fallback also failed:', fallbackError.message);
+                console.error('❌ Emergency Mistral fallback also failed:', fallbackError.message);
             }
         }
         
