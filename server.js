@@ -174,6 +174,7 @@ function makeFriendly(response, context, message) {
 
 const GOOGLE_SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
 const GOOGLE_SEARCH_CX = process.env.GOOGLE_SEARCH_CX;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
 
 // Helper: Detect if a query is about current events or latest info
 function isCurrentEventQuery(message) {
