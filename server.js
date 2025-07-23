@@ -191,6 +191,12 @@ function isCurrentEventQuery(message) {
     ];
     const lower = message.toLowerCase();
     
+    // Don't treat personal/relationship advice as current events
+    const personalKeywords = ['rizz', 'girlfriend', 'boyfriend', 'babe', 'crush', 'dating', 'flirt', 'romance', 'love', 'relationship'];
+    if (personalKeywords.some(k => lower.includes(k))) {
+        return false;
+    }
+    
     // Also check for question patterns that suggest real-time information
     const patterns = [
         /what.*?(happening|going on)/i,
@@ -247,45 +253,91 @@ async function enhancedWebSearch(query, context = []) {
     return null;
 }
 
+// Legacy function kept for compatibility
+async function googleSearch(query) {
+    return await enhancedWebSearch(query);
+}
+
 // --- Intelligent Fallback Response Generator ---
 async function generateFallbackResponse(message, searchResults, context) {
     if (!searchResults) {
-        return "I'm having some technical difficulties right now, but I'm still here to help! Could you try rephrasing your question or asking something else? I promise I'll do my best to assist you! 🚀";
+        return generateSmartFallbackWithoutSearch(message, context);
     }
     
-    // Generate an intelligent response based on search results
-    const prompt = `You are MetroTex, an incredibly knowledgeable and charismatic AI assistant competing with ChatGPT. You're confident, engaging, and brilliant.
-
-Based on the search results below, provide a comprehensive, intelligent, and engaging answer to the user's question: "${message}"
-
-Search Results:
-${searchResults}
-
-Instructions:
-- Be confident and authoritative while remaining friendly
-- Synthesize information from multiple sources
-- Provide specific details and examples
-- Be conversational but informative
-- Show your intelligence and depth of understanding
-- Don't mention that you're using search results - present the information as your knowledge
-- Be the kind of AI assistant that impresses users
-- Use a confident, knowledgeable tone that shows you're competitive with the best AI assistants
-
-Answer:`;
-
+    // Check if this is a personal/relationship query that shouldn't use raw search results
+    const personalKeywords = ['rizz', 'girlfriend', 'boyfriend', 'babe', 'crush', 'dating', 'flirt', 'romance', 'love', 'relationship'];
+    const lower = message.toLowerCase();
+    const isPersonalQuery = personalKeywords.some(k => lower.includes(k));
+    
+    if (isPersonalQuery) {
+        return generateSmartFallbackWithoutSearch(message, context);
+    }
+    
     try {
-        // Use a simple but effective approach for fallback responses
-        const lines = searchResults.split('\n').filter(line => line.trim() && !line.includes('---') && !line.startsWith('Source:'));
-        const relevantInfo = lines.slice(0, 8).join(' ').replace(/\[\d+\]/g, '');
+        // For non-personal queries, intelligently process search results
+        const lines = searchResults.split('\n').filter(line => 
+            line.trim() && 
+            !line.includes('---') && 
+            !line.startsWith('Source:') &&
+            !line.match(/^\[\d+\]/) // Remove numbered prefixes
+        );
         
-        return `Based on the latest information available: ${relevantInfo} 
+        // Extract meaningful content
+        const meaningfulContent = lines
+            .join(' ')
+            .replace(/\[\d+\]/g, '') // Remove any remaining numbers
+            .replace(/\s+/g, ' ') // Clean up whitespace
+            .trim();
+        
+        if (meaningfulContent.length < 50) {
+            return generateSmartFallbackWithoutSearch(message, context);
+        }
+        
+        // Summarize and present intelligently
+        const summary = meaningfulContent.substring(0, 400);
+        
+        return `Based on the latest information: ${summary}...
 
 Let me know if you'd like me to dive deeper into any specific aspect of this! I'm here to help with whatever questions you have. 🚀`;
         
     } catch (error) {
-        console.error('Error generating fallback response:', error);
-        return `I found some information about "${message}" but I'm having trouble processing it right now. However, I'm still here and ready to help with anything else you need! What would you like to explore? 💡`;
+        console.error('Error processing search results:', error);
+        return generateSmartFallbackWithoutSearch(message, context);
     }
+}
+
+// --- Smart Fallback Without Search ---
+function generateSmartFallbackWithoutSearch(message, context) {
+    const lower = message.toLowerCase();
+    
+    // Relationship/Dating advice
+    if (lower.includes('rizz') || lower.includes('flirt') || lower.includes('babe') || lower.includes('girlfriend') || lower.includes('boyfriend')) {
+        const rizzAdvice = [
+            "Here's the thing about real charm - it's all about being genuinely interested in who she is. Ask thoughtful questions, listen to her answers, and share something meaningful about yourself. Authenticity beats any pickup line every time! 😊",
+            "Want to level up your game? Focus on making her laugh and feel special. Compliment something unique about her personality, not just her looks. Show that you pay attention to the little things she says. That's real charm! 🔥",
+            "The best 'rizz' is being your authentic self while showing genuine interest. Ask about her passions, remember details from previous conversations, and be confident without being arrogant. Real connection > pickup lines! ⚡",
+            "Here's what really works: Be present when you're with her, make her feel heard, and don't be afraid to be a little vulnerable. Share your dreams, ask about hers, and create inside jokes together. That's how you build real chemistry! 💡"
+        ];
+        return rizzAdvice[Math.floor(Math.random() * rizzAdvice.length)];
+    }
+    
+    // General life advice
+    if (lower.includes('advice') || lower.includes('help') || lower.includes('what should i')) {
+        return "I'd love to help you think through this! While I don't have access to the latest search results right now, I can offer some thoughtful perspective. Could you tell me more specifics about your situation? I'm great at helping you brainstorm solutions and see things from different angles. 💪";
+    }
+    
+    // Technical questions
+    if (lower.includes('how to') || lower.includes('tutorial') || lower.includes('learn')) {
+        return "Great question! While I can't search for the latest tutorials right now, I'd be happy to break down the concept and give you a solid starting point. What specific aspect would you like me to explain? I can provide foundational knowledge and point you in the right direction! 🎯";
+    }
+    
+    // General knowledge
+    if (lower.includes('what is') || lower.includes('explain') || lower.includes('tell me about')) {
+        return "I'd be excited to explain this to you! While I can't access the latest information right now, I have extensive knowledge on most topics. Let me share what I know, and if you need the most current details, I'll let you know where to look for updates. What specific aspect interests you most? 🚀";
+    }
+    
+    // Default intelligent response
+    return "I'm having some technical difficulties accessing real-time information right now, but I'm still here to help! I excel at problem-solving, creative thinking, and having engaging conversations. What would you like to explore together? I promise to give you thoughtful, intelligent responses even without live search! 💡";
 }
 
 // --- In-memory session memory (for demonstration; use Redis or DB for production) ---
