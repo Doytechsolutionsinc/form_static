@@ -77,6 +77,10 @@ const allowedOrigins = [
     'https://metrotexonline.vercel.app',
     'https://metrotexonline.vercel.app/',
     'https://metrotexonline.vercel.app/*',
+    // Added new frontend deployment URL
+    'https://aries-ai-ecru.vercel.app',
+    'https://aries-ai-ecru.vercel.app/',
+    'https://aries-ai-ecru.vercel.app/*',
 ];
 
 app.use(cors({
